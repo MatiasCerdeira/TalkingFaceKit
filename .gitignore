@@ -259,3 +259,18 @@ Network Trash Folder
 Temporary Items
 
 .apdisk
+
+
+
+# Datos y resultados locales
+data/
+outputs/
+reports/
+artifacts/
+
+# Modelos y checkpoints
+models/
+checkpoints/
+
+# Archivos temporales
+tmp/
