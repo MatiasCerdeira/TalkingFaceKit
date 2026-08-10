@@ -1,0 +1,1 @@
+TalkingFaceKit is a modular Python library for processing talking-face videos. It aims to provide a common, reusable representation for synchronized video, audio, facial-animation parameters, and metadata.
