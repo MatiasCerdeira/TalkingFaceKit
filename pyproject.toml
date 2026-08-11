@@ -5,6 +5,7 @@ description = "A modular library for processing talking-face videos"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "av>=18.0.0",
     "numpy>=2.4.6",
 ]
 
@@ -26,7 +27,7 @@ testpaths = ["tests"]
 line-length = 100
 
 [tool.ruff.lint]
-extend-select = ["B", "D", "I", "UP"]
+extend-select = ["B","I", "UP"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
