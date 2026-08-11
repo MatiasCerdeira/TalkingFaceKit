@@ -274,3 +274,7 @@ checkpoints/
 
 # Archivos temporales
 tmp/
+
+# Instrucciones y configuración local de agentes
+CLAUDE.local.md
+.claude/settings.local.json

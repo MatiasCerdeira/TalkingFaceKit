@@ -1,2 +1,1 @@
-def hello() -> str:
-    return "Hello from talkingfacekit!"
+"""Reusable tools for processing talking-face video sequences."""

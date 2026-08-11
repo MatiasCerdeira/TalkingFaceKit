@@ -39,6 +39,7 @@ git clone https://github.com/MatiasCerdeira/TalkingFaceKit.git
 cd TalkingFaceKit
 uv sync
 uv run pytest
+uv run mypy
 ```
 
 `uv sync` crea `.venv`, obtiene Python 3.11 si hace falta e instala las dependencias del proyecto.
@@ -109,6 +110,32 @@ conda install nombre-de-la-libreria
 
 Antes de agregar dependencias grandes como PyTorch, modelos de tracking o librerías con CUDA, hablarlo con el equipo. Pueden necesitar configuraciones diferentes en macOS y Windows.
 
+## Estilo, tipado y arquitectura
+
+El código, los identificadores, comentarios, docstrings y mensajes de error se escriben en inglés.
+
+El proyecto usa:
+
+- **Ruff** para formato, imports y errores comunes.
+- **mypy en modo estricto** para verificar type hints.
+- **pytest** para verificar comportamiento.
+- Docstrings estilo **NumPy** para la API pública.
+
+Las reglas completas están en [`AGENTS.md`](AGENTS.md). Las decisiones de diseño están en
+[`docs/architecture.md`](docs/architecture.md).
+
+Codex lee `AGENTS.md` directamente. Claude Code lee [`CLAUDE.md`](CLAUDE.md), que importa las
+mismas reglas. Cuando el equipo cambia una regla o decisión arquitectónica, debe actualizar esos
+documentos en el mismo commit que el código afectado.
+
+Reglas básicas de tipado:
+
+- Tipar parámetros y retornos de todas las funciones de producción.
+- Usar sintaxis de Python 3.11 como `list[str]` y `Value | None`.
+- Evitar `Any` y no desactivar mypy globalmente por una librería problemática.
+- Documentar y validar shape, dtype, unidades, rangos y ejes de los arrays NumPy.
+- Usar `pathlib.Path` para rutas públicas del filesystem.
+
 ## Cómo subir cambios
 
 Primero revisar y probar:
@@ -116,6 +143,7 @@ Primero revisar y probar:
 ```bash
 uv run ruff format .
 uv run ruff check .
+uv run mypy
 uv run pytest
 git status
 ```
@@ -152,7 +180,7 @@ Siempre ejecutar `uv sync` después de un pull que haya modificado `pyproject.to
 - Avisar al equipo qué archivos o funcionalidad está tocando cada uno.
 - Hacer `git pull --ff-only` antes de empezar a trabajar.
 - Hacer commits chicos y con mensajes claros.
-- Ejecutar Ruff y pytest antes de cada push.
+- Ejecutar Ruff, mypy y pytest antes de cada push.
 - No usar `git push --force` sobre `main`.
 - No editar manualmente `uv.lock`.
 - No subir `.venv`, datasets, videos generados, modelos, outputs ni archivos `.env`.
@@ -166,6 +194,9 @@ Siempre ejecutar `uv sync` después de un pull que haya modificado `pyproject.to
 .python-version    Versión de Python usada por el proyecto
 pyproject.toml     Configuración y lista de dependencias
 uv.lock            Versiones exactas resueltas por uv
+AGENTS.md           Reglas compartidas para humanos y agentes
+CLAUDE.md           Importa AGENTS.md para Claude Code
+docs/               Decisiones de arquitectura
 src/               Código de TalkingFaceKit
 tests/             Tests automáticos
 .venv/             Entorno local; nunca se sube a Git
@@ -177,8 +208,9 @@ Si hay dudas sobre el entorno:
 
 ```bash
 uv run python --version
-uv run pytest
 uv run ruff check .
+uv run mypy
+uv run pytest
 ```
 
 Python debe mostrar una versión `3.11.x` y los tests deben terminar correctamente.
