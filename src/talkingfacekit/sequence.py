@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+
 import av
 
 
@@ -8,7 +9,7 @@ class VideoMetadata:
     width: int
     height: int
     average_fps: float | None
-    source_duration_seconds: float
+    stream_duration_seconds: float | None
     has_audio: bool
 
 
@@ -19,10 +20,13 @@ class TalkingFaceSequence:
         if not self.path.exists():
             raise FileNotFoundError(f"Video not found: {self.path}")
 
-        self.metadata = self._inspect_video()
-        self.start_seconds = 0.0
-        self.end_seconds = self.metadata.source_duration_seconds
+        self.metadata: VideoMetadata = self._inspect_video()
+        self.start_seconds: float = 0.0
+        self.end_seconds: float | None = self.metadata.stream_duration_seconds
 
+    # PUBLIC
+
+    # PRIVATE
     def _inspect_video(self) -> VideoMetadata:
         with av.open(self.path) as container:
             video_stream = container.streams.video[0]
@@ -35,8 +39,13 @@ class TalkingFaceSequence:
                     if video_stream.average_rate is not None
                     else None
                 ),
-                source_duration_seconds=10,
+                stream_duration_seconds=(
+                    float(video_stream.duration * video_stream.time_base)
+                    if video_stream.duration is not None
+                    and video_stream.time_base is not None
+                    else None
+                ),
                 has_audio=bool(container.streams.audio),
             )
+            print("Duracion: ", metadata.stream_duration_seconds)
         return metadata
-        # Abrir el video, leer duracion, FPS, resolucion, audio
