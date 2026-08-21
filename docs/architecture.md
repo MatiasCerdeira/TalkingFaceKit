@@ -23,17 +23,33 @@ timestamps, and metadata without being tied to one dataset, tracker, or speech m
 Dependencies point toward the core:
 
 ```text
-video/audio/model integrations
-              |
-              v
-       core sequence model
-              |
-              v
-       NumPy and Python types
+TalkingFaceSequence facade ---> video/audio/model integrations
+             |                              |
+             +--------------+---------------+
+                            v
+               core Python and NumPy values
 ```
 
-Core modules must not import OpenCV, PyTorch, tracker implementations, speech models, or FFmpeg
-wrappers. Integration modules may translate those frameworks into core Python and NumPy types.
+Core data types must not contain OpenCV, PyTorch, PyAV, tracker, speech-model, or FFmpeg objects.
+Direct construction must not access the filesystem. Integration modules translate external
+frameworks into core Python and NumPy types; user-facing sequence methods may delegate to those
+boundaries without containing backend-specific logic.
+
+## Sequence aggregate pattern
+
+`TalkingFaceSequence` is the mutable, user-facing aggregate for the data and operations associated
+with one sequence. Alternate constructors such as `TalkingFaceSequence.from_video(path)` provide a
+convenient API but delegate file and framework work to integration modules. Future expensive
+operations such as decoding or tracking will be explicit methods. Integrations compute typed
+results first, and sequence methods attach them only after success so failures do not leave partial
+state. Metadata and future result records remain immutable where practical; integrations must not
+mutate sequence attributes directly.
+
+Landmark tracking follows this pattern through `sequence.track_landmarks(tracker, name=...)`. The
+sequence supplies its path and interval to a small backend contract, then owns the completed result.
+Names make multiple backends or configurations comparable without coupling the aggregate to their
+implementation details. Replacement is explicit, and a backend failure leaves the existing mapping
+unchanged.
 
 ## Intended package boundaries
 
@@ -41,10 +57,13 @@ Create these modules only when real code needs them:
 
 ```text
 src/talkingfacekit/
-├── sequence.py       Core sequence and metadata types
-├── validation.py     Backend-independent invariant checks
-├── io/               Video, audio, and serialization boundaries
-└── tracking/         Tracker interfaces and implementations
+├── metadata.py       Backend-independent metadata value types
+├── sequence.py       User-facing sequence aggregate
+├── io/
+│   └── video.py      PyAV-based video inspection boundary
+└── tracking/
+    ├── landmarks.py  Backend-independent landmark result and tracker contract
+    └── mediapipe.py  Optional MediaPipe/PyAV streaming adapter
 ```
 
 Avoid empty directories and placeholder abstractions. The first implementation should remain small.
@@ -58,6 +77,21 @@ Avoid empty directories and placeholder abstractions. The first implementation s
 - Use seconds for public durations and timestamps unless an API explicitly declares another unit.
 - Never infer or silently change FPS, sample rate, color order, or synchronization metadata.
 - Keep backend-specific tensors and objects outside the core model.
+
+`FaceLandmarkTrack` currently establishes the landmark timeline contract:
+
+- `frame_indices`: strictly increasing, zero-based source decode indices with dtype `int64`;
+- `timestamps_seconds`: strictly increasing source presentation timestamps with dtype `float64`;
+- `landmarks`: shape `(frame_count, landmark_count, 3)` with dtype `float32`;
+- `detected`: one boolean per frame; missing detections remain aligned and contain only `NaN`;
+- `topology` and `coordinate_system`: explicit strings identifying point ordering and coordinate
+  meaning.
+
+The MediaPipe adapter uses its 478-point topology. Its x and y values are normalized image
+coordinates and z is MediaPipe-relative depth. It processes the half-open sequence interval
+`[start_seconds, end_seconds)` using original presentation timestamps. RGB arrays exist only while a
+single frame is being submitted to the tracker; they are not part of the sequence data model.
+TalkingFaceKit does not download or bundle model assets.
 
 Canonical video layout, color order, audio layout, facial-parameter schema, and timestamp semantics
 remain open decisions. They must be documented here before becoming public contracts.
@@ -87,12 +121,17 @@ remain open decisions. They must be documented here before becoming public contr
 | NumPy as the core numerical representation | Framework-independent arrays and NPZ support. |
 | Ruff, mypy strict mode, and pytest | Automated style, typing, and behavior checks. |
 | Backend-independent core | Trackers and media frameworks can change without rewriting domain types. |
+| Mutable sequence aggregate | One user-facing object coordinates explicit operations and owns their results. |
+| PyAV isolated under `io` | `from_video` delegates media inspection without embedding PyAV logic in the aggregate. |
+| Optional MediaPipe landmark backend | Provides the first local, cross-platform tracking slice without making it a core dependency. |
+| Named transactional landmark results | Supports comparisons and prevents failed work from leaving partial sequence state. |
+| Stream frames at tracking boundaries | Computer-vision backends receive RGB pixels without retaining an uncompressed video array. |
 
 ## Pending decisions
 
 - Canonical video array shape and RGB/BGR color order.
 - Canonical audio layout, dtype, amplitude range, and channel convention.
-- Timestamp and synchronization representation.
+- Cross-modal timestamp and synchronization representation beyond landmark source timestamps.
 - Facial-animation parameter schema and FLAME conventions.
 - Serialization formats and versioning policy.
-- Optional dependency groups for video, audio, tracking, and speech backends.
+- Optional dependency groups for future audio, FLAME, and speech backends.

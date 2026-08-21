@@ -2,6 +2,71 @@
 
 TalkingFaceKit es una biblioteca modular en Python para procesar videos de personas hablando. El objetivo es representar y procesar de forma reutilizable video, audio, tracking facial y metadata.
 
+## Funcionalidad actual
+
+La primera versión inspecciona un archivo de video local y expone la metadata de su primer stream
+de video:
+
+- ancho y alto en píxeles;
+- FPS promedio, cuando el archivo lo informa;
+- duración en segundos, cuando el stream o el contenedor la informan;
+- presencia de al menos un stream de audio.
+
+```python
+from talkingfacekit import TalkingFaceSequence
+
+sequence = TalkingFaceSequence.from_video("video.webm")
+
+print(sequence.metadata.width)
+print(sequence.metadata.height)
+print(sequence.metadata.average_fps)
+print(sequence.metadata.stream_duration_seconds)
+print(sequence.metadata.has_audio)
+```
+
+Los FPS y la duración son `None` cuando el archivo no informa esos valores. `from_video` valida que
+la ruta exista, que sea un archivo regular y que el contenedor tenga al menos un stream de video.
+La clase ofrece la API principal, pero delega la inspección a la integración con PyAV; construir el
+modelo directamente no abre archivos ni realiza otras operaciones de entrada/salida. La clase no
+conserva frames decodificados ni audio en memoria.
+
+También está disponible un primer flujo vertical opcional de tracking facial con MediaPipe Face
+Landmarker. MediaPipe se instala por separado porque no es necesario para inspeccionar metadata:
+
+```bash
+uv sync --extra tracking-mediapipe
+```
+
+TalkingFaceKit no descarga ni incluye modelos. El usuario debe proporcionar un modelo compatible
+de Face Landmarker en formato `.task`:
+
+```python
+from pathlib import Path
+
+from talkingfacekit import TalkingFaceSequence
+from talkingfacekit.tracking.mediapipe import MediaPipeFaceTracker
+
+sequence = TalkingFaceSequence.from_video("portrait.webm")
+tracker = MediaPipeFaceTracker(Path("models/face_landmarker.task"))
+
+landmarks = sequence.track_landmarks(tracker, name="mediapipe")
+
+print(landmarks.landmarks.shape)  # (cantidad_de_frames, 478, 3)
+print(landmarks.detected)  # una máscara booleana por frame
+print(sequence.landmark_tracks["mediapipe"] is landmarks)
+```
+
+El tracker procesa un solo rostro. Decodifica un frame por vez, lo convierte temporalmente a RGB,
+lo envía a MediaPipe y descarta inmediatamente sus píxeles. El resultado sí se conserva: índices de
+frame, timestamps originales en segundos, 478 puntos `(x, y, z)` en `float32` y una máscara que
+indica en qué frames se detectó el rostro. Los frames sin detección permanecen en la línea temporal
+y contienen `NaN` en sus landmarks.
+
+Los resultados se guardan por nombre para permitir futuras comparaciones entre backends o
+configuraciones. Un nombre existente no se sobrescribe salvo que se use `overwrite=True`. El
+resultado se adjunta a la secuencia solamente cuando el tracking termina correctamente; un error no
+deja estado parcial.
+
 ## Regla principal
 
 El proyecto usa **Python 3.11** y **uv**. No usamos `pip`, Conda ni entornos creados manualmente para este repositorio.
