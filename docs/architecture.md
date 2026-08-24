@@ -58,12 +58,17 @@ Create these modules only when real code needs them:
 ```text
 src/talkingfacekit/
 ├── metadata.py       Backend-independent metadata value types
+├── mesh.py           Backend-independent animated triangular-mesh contract
+├── rendering/
+│   └── plotly.py      Optional offline interactive HTML renderer
 ├── sequence.py       User-facing sequence aggregate
 ├── io/
+│   ├── landmarks.py  Versioned NPZ landmark persistence boundary
 │   └── video.py      PyAV-based video inspection boundary
 └── tracking/
     ├── landmarks.py  Backend-independent landmark result and tracker contract
-    └── mediapipe.py  Optional MediaPipe/PyAV streaming adapter
+    ├── mediapipe.py  Optional MediaPipe/PyAV streaming adapter
+    └── mediapipe_mesh.py  MediaPipe landmark-to-surface conversion boundary
 ```
 
 Avoid empty directories and placeholder abstractions. The first implementation should remain small.
@@ -92,6 +97,36 @@ coordinates and z is MediaPipe-relative depth. It processes the half-open sequen
 `[start_seconds, end_seconds)` using original presentation timestamps. RGB arrays exist only while a
 single frame is being submitted to the tracker; they are not part of the sequence data model.
 TalkingFaceKit does not download or bundle model assets.
+
+`FaceMeshTrack` establishes the animated triangular-surface contract:
+
+- `frame_indices`, `timestamps_seconds`, and `detected` retain the source landmark timeline;
+- `vertices`: shape `(frame_count, vertex_count, 3)` with dtype `float32`;
+- `triangles`: shape `(triangle_count, 3)` with dtype `int32`, fixed across all frames and containing
+  valid, non-degenerate vertex indices;
+- detected vertex rows contain finite coordinates and undetected rows contain only `NaN`;
+- `topology` and `coordinate_system` explicitly identify connectivity and coordinate meaning.
+
+The core mesh contract does not depend on MediaPipe or a renderer. The MediaPipe conversion
+boundary maps landmarks 0 through 467 to the official 852-triangle facial tessellation; iris
+landmarks 468 through 477 remain separate because they are contours rather than tessellated skin.
+The conversion requires explicit source width and height, centers normalized coordinates, flips the
+vertical axis, and aspect-corrects horizontal position and relative depth into image-height units.
+It preserves MediaPipe-relative depth and therefore does not claim metric 3D reconstruction.
+
+Rendering is a separate optional integration. The Plotly renderer consumes only `FaceMeshTrack`,
+applies a display-only depth multiplier to a copy of z coordinates, and writes a self-contained
+offline HTML file with a neutral material, virtual lighting, an orbital camera, and timeline
+controls. It does not decode source pixels or add color data to the mesh contract. Original
+timestamps remain visible; automatic playback uses their median interval because Plotly accepts one
+display duration for the complete animation.
+
+Completed landmark tracks may be persisted through `save_landmark_track` and restored through
+`load_landmark_track`. The compressed NPZ schema is versioned independently from the Python package
+and stores tracker provenance, topology, coordinate-system description, frame indices, original
+timestamps, the complete landmark tensor, and its detection mask. Loading reconstructs a
+`FaceLandmarkTrack`, so all current data-contract validation is applied again. Saving completes a
+temporary archive before replacing the destination, and replacement must be requested explicitly.
 
 Canonical video layout, color order, audio layout, facial-parameter schema, and timestamp semantics
 remain open decisions. They must be documented here before becoming public contracts.
@@ -126,6 +161,10 @@ remain open decisions. They must be documented here before becoming public contr
 | Optional MediaPipe landmark backend | Provides the first local, cross-platform tracking slice without making it a core dependency. |
 | Named transactional landmark results | Supports comparisons and prevents failed work from leaving partial sequence state. |
 | Stream frames at tracking boundaries | Computer-vision backends receive RGB pixels without retaining an uncompressed video array. |
+| Versioned NPZ landmark archives | Makes expensive tracking results reusable while preserving NumPy dtypes and timeline alignment. |
+| Backend-independent animated mesh contract | Makes triangle geometry reusable by renderers, exporters, and future model-fitting backends. |
+| MediaPipe 468-vertex surface conversion | Reuses the official 852-triangle topology while keeping relative-depth limitations explicit. |
+| Plotly as optional HTML renderer | Provides a portable interactive demonstration without coupling core mesh data to a graphics framework. |
 
 ## Pending decisions
 
@@ -133,5 +172,5 @@ remain open decisions. They must be documented here before becoming public contr
 - Canonical audio layout, dtype, amplitude range, and channel convention.
 - Cross-modal timestamp and synchronization representation beyond landmark source timestamps.
 - Facial-animation parameter schema and FLAME conventions.
-- Serialization formats and versioning policy.
+- Serialization formats and versioning policy for data other than landmark tracks.
 - Optional dependency groups for future audio, FLAME, and speech backends.

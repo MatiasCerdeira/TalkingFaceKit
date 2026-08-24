@@ -67,6 +67,115 @@ configuraciones. Un nombre existente no se sobrescribe salvo que se use `overwri
 resultado se adjunta a la secuencia solamente cuando el tracking termina correctamente; un error no
 deja estado parcial.
 
+### Extraer los landmarks de un video completo
+
+La biblioteca incluye una CLI para ejecutar el flujo real de punta a punta y conservar su resultado.
+Primero hay que instalar el extra opcional, crear las carpetas locales ignoradas por Git y colocar un
+modelo Face Landmarker compatible dentro de `models/`:
+
+```powershell
+uv sync --extra tracking-mediapipe
+New-Item -ItemType Directory -Force models, outputs
+Invoke-WebRequest `
+  -Uri "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task" `
+  -OutFile models/face_landmarker.task
+```
+
+Después se procesa el video completo:
+
+```powershell
+uv run python -m talkingfacekit extract-landmarks `
+  tests/fixtures/example1.webm `
+  --model models/face_landmarker.task `
+  --output outputs/example1-landmarks.npz
+```
+
+El archivo comprimido conserva todos los frames decodificados dentro del intervalo, incluidos los
+frames sin detección. Para comprobar y resumir un resultado guardado:
+
+```powershell
+uv run python -m talkingfacekit inspect-landmarks outputs/example1-landmarks.npz
+```
+
+También se puede volver a cargar desde Python sin ejecutar MediaPipe otra vez:
+
+```python
+from talkingfacekit import load_landmark_track
+
+track = load_landmark_track("outputs/example1-landmarks.npz")
+
+print(track.landmarks.shape)
+print(track.timestamps_seconds)
+print(track.detected)
+```
+
+Los modelos y resultados se mantienen fuera de Git mediante `models/` y `outputs/`. La CLI no
+descarga modelos automáticamente ni sobrescribe un archivo existente salvo que se agregue
+`--overwrite`.
+
+### Construir una superficie facial triangular
+
+Un track de MediaPipe puede convertirse en una secuencia de meshes en memoria sin volver a
+procesar el video. El ancho y el alto se proporcionan explícitamente porque son necesarios para
+corregir la relación de aspecto de las coordenadas normalizadas:
+
+```python
+from talkingfacekit import build_mediapipe_face_mesh, load_landmark_track
+from talkingfacekit.io.video import inspect_video_metadata
+
+video_path = "tests/fixtures/example1.webm"
+metadata = inspect_video_metadata(video_path)
+landmarks = load_landmark_track("outputs/example1-landmarks.npz")
+
+mesh = build_mediapipe_face_mesh(
+    landmarks,
+    image_width=metadata.width,
+    image_height=metadata.height,
+)
+
+print(mesh.vertices.shape)  # (cantidad_de_frames, 468, 3)
+print(mesh.triangles.shape)  # (852, 3)
+```
+
+Los vértices 0 a 467 forman la superficie triangular oficial de MediaPipe. Los diez landmarks de
+iris quedan fuera porque MediaPipe los expone como contornos separados, no como parte de la piel
+teselada. La conversión centra las coordenadas, orienta `y` hacia arriba y corrige `x` y `z` usando
+`image_width / image_height`. El resultado conserva índices de frame, timestamps y detecciones,
+pero sigue usando profundidad relativa de MediaPipe: es adecuado para visualización y animación,
+no una reconstrucción métrica de la cabeza.
+
+### Renderizar el mesh animado
+
+El renderer interactivo es opcional. Se instala junto con MediaPipe sin convertir Plotly en una
+dependencia del núcleo de la biblioteca:
+
+```powershell
+uv sync --extra tracking-mediapipe --extra rendering
+```
+
+El comando siguiente carga los landmarks ya extraídos, usa el video solamente para recuperar su
+ancho y alto, construye el mesh y escribe un único HTML autocontenido que funciona offline:
+
+```powershell
+uv run python -m talkingfacekit render-mesh `
+  outputs\example1-landmarks.npz `
+  --video tests\fixtures\example1.webm `
+  --output outputs\example1-mesh.html
+```
+
+El visor ofrece reproducción, pausa, selección temporal, zoom y cámara orbital. Usa un material
+uniforme con iluminación virtual; no vuelve a decodificar los píxeles ni toma colores del video.
+Por defecto conserva la profundidad relativa con `--depth-scale 1.0`. Un valor distinto modifica
+sólo la presentación, no el `FaceMeshTrack`:
+
+```powershell
+uv run python -m talkingfacekit render-mesh `
+  outputs\example1-landmarks.npz `
+  --video tests\fixtures\example1.webm `
+  --output outputs\example1-mesh-depth-2.html `
+  --depth-scale 2.0
+```
+
 ## Regla principal
 
 El proyecto usa **Python 3.11** y **uv**. No usamos `pip`, Conda ni entornos creados manualmente para este repositorio.

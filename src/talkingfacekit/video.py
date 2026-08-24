@@ -42,22 +42,16 @@ class VideoData:
     def __post_init__(self) -> None:
         """Validate the decoded video data contract."""
         if not isinstance(self.frames, np.ndarray):
-            raise TypeError(
-                f"frames must be a NumPy array; observed {type(self.frames).__name__}"
-            )
+            raise TypeError(f"frames must be a NumPy array; observed {type(self.frames).__name__}")
         if self.frames.dtype != np.dtype(np.uint8):
-            raise ValueError(
-                f"frames must have dtype uint8; observed {self.frames.dtype}"
-            )
+            raise ValueError(f"frames must have dtype uint8; observed {self.frames.dtype}")
         if self.frames.ndim != 4 or self.frames.shape[-1] != 3:
             raise ValueError(
                 "frames must have shape (frame_count, height, width, 3); "
                 f"observed {self.frames.shape}"
             )
         if self.frames.shape[0] == 0:
-            raise ValueError(
-                "frames must contain at least one frame; observed frame_count 0"
-            )
+            raise ValueError("frames must contain at least one frame; observed frame_count 0")
         if self.frames.shape[1] == 0 or self.frames.shape[2] == 0:
             raise ValueError(
                 f"frames must have positive height and width; observed shape {self.frames.shape}"
