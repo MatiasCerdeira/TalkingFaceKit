@@ -30,6 +30,30 @@ La clase ofrece la API principal, pero delega la inspección a la integración c
 modelo directamente no abre archivos ni realiza otras operaciones de entrada/salida. La clase no
 conserva frames decodificados ni audio en memoria.
 
+### Decodificar frames por streaming
+
+La decodificación también está centralizada en la integración de video. `stream_video_frames`
+abre el primer stream de video con PyAV y entrega un frame RGB por vez, sin materializar el video
+completo en memoria:
+
+```python
+from talkingfacekit import stream_video_frames
+
+for frame in stream_video_frames("portrait.webm", start_seconds=0.0, end_seconds=1.0):
+    print(frame.frame_index)
+    print(frame.timestamp_seconds)
+    print(frame.rgb.shape)  # (alto, ancho, 3), RGB uint8
+```
+
+El intervalo es semiabierto: `[start_seconds, end_seconds)`. Los índices y timestamps provienen del
+stream original; la función no usa los FPS para inventar tiempos. La integración conserva como
+máximo el frame que está entregando en ese momento. Un consumidor puede retener explícitamente sus
+arrays, pero hacerlo para muchos frames aumenta el uso de memoria.
+
+Los trackers consumen este stream compartido en lugar de abrir el video por su cuenta. Así, la
+selección del stream, la conversión a RGB y las reglas de timestamps permanecen iguales para
+MediaPipe y futuros backends como FLAME.
+
 También está disponible un primer flujo vertical opcional de tracking facial con MediaPipe Face
 Landmarker. MediaPipe se instala por separado porque no es necesario para inspeccionar metadata:
 
@@ -56,11 +80,11 @@ print(landmarks.detected)  # una máscara booleana por frame
 print(sequence.landmark_tracks["mediapipe"] is landmarks)
 ```
 
-El tracker procesa un solo rostro. Decodifica un frame por vez, lo convierte temporalmente a RGB,
-lo envía a MediaPipe y descarta inmediatamente sus píxeles. El resultado sí se conserva: índices de
-frame, timestamps originales en segundos, 478 puntos `(x, y, z)` en `float32` y una máscara que
-indica en qué frames se detectó el rostro. Los frames sin detección permanecen en la línea temporal
-y contienen `NaN` en sus landmarks.
+El tracker procesa un solo rostro. Consume los frames RGB de la integración compartida, los envía a
+MediaPipe y no conserva sus píxeles. El resultado sí se conserva: índices de frame, timestamps
+originales en segundos, 478 puntos `(x, y, z)` en `float32` y una máscara que indica en qué frames
+se detectó el rostro. Los frames sin detección permanecen en la línea temporal y contienen `NaN` en
+sus landmarks.
 
 Los resultados se guardan por nombre para permitir futuras comparaciones entre backends o
 configuraciones. Un nombre existente no se sobrescribe salvo que se use `overwrite=True`. El
@@ -90,8 +114,9 @@ uv run python -m talkingfacekit extract-landmarks `
   --output outputs/example1-landmarks.npz
 ```
 
-El archivo comprimido conserva todos los frames decodificados dentro del intervalo, incluidos los
-frames sin detección. Para comprobar y resumir un resultado guardado:
+El archivo comprimido conserva una entrada de landmarks por cada frame decodificado dentro del
+intervalo, incluidos los frames sin detección. No conserva los píxeles RGB. Para comprobar y
+resumir un resultado guardado:
 
 ```powershell
 uv run python -m talkingfacekit inspect-landmarks outputs/example1-landmarks.npz

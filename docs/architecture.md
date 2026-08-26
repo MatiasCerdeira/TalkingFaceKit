@@ -39,17 +39,18 @@ boundaries without containing backend-specific logic.
 
 `TalkingFaceSequence` is the mutable, user-facing aggregate for the data and operations associated
 with one sequence. Alternate constructors such as `TalkingFaceSequence.from_video(path)` provide a
-convenient API but delegate file and framework work to integration modules. Future expensive
-operations such as decoding or tracking will be explicit methods. Integrations compute typed
-results first, and sequence methods attach them only after success so failures do not leave partial
-state. Metadata and future result records remain immutable where practical; integrations must not
-mutate sequence attributes directly.
+convenient API but delegate file and framework work to integration modules. Expensive operations
+such as decoding and tracking remain explicit. Integrations compute typed results first, and
+sequence methods attach them only after success so failures do not leave partial state. Metadata
+and future result records remain immutable where practical; integrations must not mutate sequence
+attributes directly.
 
 Landmark tracking follows this pattern through `sequence.track_landmarks(tracker, name=...)`. The
 sequence supplies its path and interval to a small backend contract, then owns the completed result.
 Names make multiple backends or configurations comparable without coupling the aggregate to their
 implementation details. Replacement is explicit, and a backend failure leaves the existing mapping
-unchanged.
+unchanged. Tracker implementations consume the shared video-frame stream instead of opening PyAV
+containers themselves.
 
 ## Intended package boundaries
 
@@ -59,15 +60,16 @@ Create these modules only when real code needs them:
 src/talkingfacekit/
 ├── metadata.py       Backend-independent metadata value types
 ├── mesh.py           Backend-independent animated triangular-mesh contract
+├── video.py          Backend-independent streamed-frame contract
 ├── rendering/
 │   └── plotly.py      Optional offline interactive HTML renderer
 ├── sequence.py       User-facing sequence aggregate
 ├── io/
 │   ├── landmarks.py  Versioned NPZ landmark persistence boundary
-│   └── video.py      PyAV-based video inspection boundary
+│   └── video.py      PyAV-based video inspection and RGB streaming boundary
 └── tracking/
     ├── landmarks.py  Backend-independent landmark result and tracker contract
-    ├── mediapipe.py  Optional MediaPipe/PyAV streaming adapter
+    ├── mediapipe.py  Optional MediaPipe landmark adapter
     └── mediapipe_mesh.py  MediaPipe landmark-to-surface conversion boundary
 ```
 
@@ -83,6 +85,21 @@ Avoid empty directories and placeholder abstractions. The first implementation s
 - Never infer or silently change FPS, sample rate, color order, or synchronization metadata.
 - Keep backend-specific tensors and objects outside the core model.
 
+`DecodedVideoFrame` establishes the shared streaming contract:
+
+- `frame_index`: non-negative, zero-based source decode index;
+- `timestamp_seconds`: finite source presentation timestamp in seconds;
+- `rgb`: shape `(height, width, 3)` with positive spatial dimensions and dtype `uint8`;
+- channel order is explicitly RGB and values use the inclusive range `[0, 255]`.
+
+`stream_video_frames` owns PyAV container access, selects the first video stream, processes the
+half-open interval `[start_seconds, end_seconds)`, converts frames explicitly to RGB, and requires
+strictly increasing presentation timestamps. It yields one `DecodedVideoFrame` at a time and does
+not retain previous arrays. Source FPS is metadata only and is never used to synthesize timestamps.
+Callers decide whether to retain yielded pixels and therefore own any resulting memory growth.
+Computer-vision backends should consume this boundary instead of duplicating PyAV access, interval
+filtering, color conversion, or timestamp validation.
+
 `FaceLandmarkTrack` currently establishes the landmark timeline contract:
 
 - `frame_indices`: strictly increasing, zero-based source decode indices with dtype `int64`;
@@ -93,10 +110,10 @@ Avoid empty directories and placeholder abstractions. The first implementation s
   meaning.
 
 The MediaPipe adapter uses its 478-point topology. Its x and y values are normalized image
-coordinates and z is MediaPipe-relative depth. It processes the half-open sequence interval
-`[start_seconds, end_seconds)` using original presentation timestamps. RGB arrays exist only while a
-single frame is being submitted to the tracker; they are not part of the sequence data model.
-TalkingFaceKit does not download or bundle model assets.
+coordinates and z is MediaPipe-relative depth. It consumes `DecodedVideoFrame` records from the
+shared stream and performs only MediaPipe-specific timestamp conversion and inference. In this
+workflow, an RGB array is retained only while its frame is submitted to the tracker; pixels are not
+part of the sequence data model. TalkingFaceKit does not download or bundle model assets.
 
 `FaceMeshTrack` establishes the animated triangular-surface contract:
 
@@ -128,8 +145,9 @@ timestamps, the complete landmark tensor, and its detection mask. Loading recons
 `FaceLandmarkTrack`, so all current data-contract validation is applied again. Saving completes a
 temporary archive before replacing the destination, and replacement must be requested explicitly.
 
-Canonical video layout, color order, audio layout, facial-parameter schema, and timestamp semantics
-remain open decisions. They must be documented here before becoming public contracts.
+Materialized multi-frame video arrays, audio layout, facial-parameter schemas, and cross-modal
+timestamp semantics remain open decisions. They must be documented here before becoming public
+contracts.
 
 ## Error handling
 
@@ -148,27 +166,28 @@ remain open decisions. They must be documented here before becoming public contr
 
 ## Current decisions
 
-| Decision | Rationale |
-| --- | --- |
-| Python 3.11 | Stable shared baseline for the team. |
-| `uv` with a committed lockfile | Reproducible environments across macOS and Windows. |
-| `src/` package layout | Prevents accidental imports from the repository root. |
-| NumPy as the core numerical representation | Framework-independent arrays and NPZ support. |
-| Ruff, mypy strict mode, and pytest | Automated style, typing, and behavior checks. |
-| Backend-independent core | Trackers and media frameworks can change without rewriting domain types. |
-| Mutable sequence aggregate | One user-facing object coordinates explicit operations and owns their results. |
-| PyAV isolated under `io` | `from_video` delegates media inspection without embedding PyAV logic in the aggregate. |
-| Optional MediaPipe landmark backend | Provides the first local, cross-platform tracking slice without making it a core dependency. |
-| Named transactional landmark results | Supports comparisons and prevents failed work from leaving partial sequence state. |
-| Stream frames at tracking boundaries | Computer-vision backends receive RGB pixels without retaining an uncompressed video array. |
-| Versioned NPZ landmark archives | Makes expensive tracking results reusable while preserving NumPy dtypes and timeline alignment. |
-| Backend-independent animated mesh contract | Makes triangle geometry reusable by renderers, exporters, and future model-fitting backends. |
-| MediaPipe 468-vertex surface conversion | Reuses the official 852-triangle topology while keeping relative-depth limitations explicit. |
-| Plotly as optional HTML renderer | Provides a portable interactive demonstration without coupling core mesh data to a graphics framework. |
+| Decision                                   | Rationale                                                                                              |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| Python 3.11                                | Stable shared baseline for the team.                                                                   |
+| `uv` with a committed lockfile             | Reproducible environments across macOS and Windows.                                                    |
+| `src/` package layout                      | Prevents accidental imports from the repository root.                                                  |
+| NumPy as the core numerical representation | Framework-independent arrays and NPZ support.                                                          |
+| Ruff, mypy strict mode, and pytest         | Automated style, typing, and behavior checks.                                                          |
+| Backend-independent core                   | Trackers and media frameworks can change without rewriting domain types.                               |
+| Mutable sequence aggregate                 | One user-facing object coordinates explicit operations and owns their results.                         |
+| PyAV isolated under `io`                   | Metadata inspection and frame decoding share one media boundary instead of leaking into trackers.      |
+| Optional MediaPipe landmark backend        | Provides the first local, cross-platform tracking slice without making it a core dependency.           |
+| Named transactional landmark results       | Supports comparisons and prevents failed work from leaving partial sequence state.                     |
+| Shared RGB frame stream                    | Backends reuse source indices, timestamps, intervals, and RGB conversion without materializing video.   |
+| Versioned NPZ landmark archives            | Makes expensive tracking results reusable while preserving NumPy dtypes and timeline alignment.        |
+| Backend-independent animated mesh contract | Makes triangle geometry reusable by renderers, exporters, and future model-fitting backends.           |
+| MediaPipe 468-vertex surface conversion    | Reuses the official 852-triangle topology while keeping relative-depth limitations explicit.           |
+| Plotly as optional HTML renderer           | Provides a portable interactive demonstration without coupling core mesh data to a graphics framework. |
 
 ## Pending decisions
 
-- Canonical video array shape and RGB/BGR color order.
+- Whether a materialized multi-frame video array should become a public contract.
+- Alternative pixel formats or decoding backends beyond the canonical RGB `uint8` frame stream.
 - Canonical audio layout, dtype, amplitude range, and channel convention.
 - Cross-modal timestamp and synchronization representation beyond landmark source timestamps.
 - Facial-animation parameter schema and FLAME conventions.

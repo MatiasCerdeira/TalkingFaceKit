@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import importlib
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 from typing import Protocol, Self, cast
 
-import av
 import numpy as np
 from numpy.typing import NDArray
 
+from talkingfacekit.io.video import stream_video_frames
 from talkingfacekit.tracking.landmarks import FaceLandmarkTrack
+from talkingfacekit.video import DecodedVideoFrame
 
 _LANDMARK_COUNT = 478
 _TOPOLOGY = "mediapipe-face-landmarker-478"
@@ -108,10 +110,10 @@ class _MediaPipeDetector:
 class MediaPipeFaceTracker:
     """Track one face per video frame with MediaPipe Face Landmarker.
 
-    The tracker streams decoded frames through PyAV, converts each selected frame to RGB, sends it
-    to MediaPipe, and immediately discards the pixels. It never stores a decoded video in memory.
-    The model asset is supplied by the caller and is neither downloaded nor bundled by
-    TalkingFaceKit.
+    The tracker consumes the shared RGB frame stream, sends each frame to MediaPipe, and retains
+    only the resulting landmarks. Video opening, PyAV decoding, interval selection, and RGB
+    conversion belong to the shared video integration. The model asset is supplied by the caller
+    and is neither downloaded nor bundled by TalkingFaceKit.
 
     Parameters
     ----------
@@ -183,41 +185,18 @@ class MediaPipeFaceTracker:
             If the interval, media, timestamps, decoded RGB frames, or tracker output violates its
             declared contract.
         """
-        path = _validate_video_path(video_path)
-        _validate_interval(start_seconds, end_seconds)
+        frames = stream_video_frames(
+            video_path,
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+        )
         with _MediaPipeDetector(self) as detector:
-            return _track_video(path, detector, start_seconds, end_seconds)
+            return _track_frames(frames, detector)
 
 
-def _validate_video_path(video_path: Path) -> Path:
-    path = Path(video_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Video not found: {path}")
-    if path.is_dir():
-        raise IsADirectoryError(f"Video path is a directory: {path}")
-    if not path.is_file():
-        raise ValueError(f"Video path is not a regular file: {path}")
-    return path
-
-
-def _validate_interval(start_seconds: float, end_seconds: float | None) -> None:
-    if not math.isfinite(start_seconds) or start_seconds < 0.0:
-        raise ValueError(f"start_seconds must be finite and non-negative, got {start_seconds}")
-    if end_seconds is not None:
-        if not math.isfinite(end_seconds):
-            raise ValueError(f"end_seconds must be finite when provided, got {end_seconds}")
-        if end_seconds <= start_seconds:
-            raise ValueError(
-                "end_seconds must be greater than start_seconds, "
-                f"got start={start_seconds}, end={end_seconds}"
-            )
-
-
-def _track_video(
-    video_path: Path,
+def _track_frames(
+    frames: Iterable[DecodedVideoFrame],
     detector: _Detector,
-    start_seconds: float,
-    end_seconds: float | None,
 ) -> FaceLandmarkTrack:
     frame_indices: list[int] = []
     timestamps_seconds: list[float] = []
@@ -225,71 +204,39 @@ def _track_video(
     detection_values: list[bool] = []
     previous_timestamp_ms: int | None = None
 
-    try:
-        with av.open(video_path) as container:
-            if not container.streams.video:
-                raise ValueError(f"Media file has no video stream: {video_path}")
-            video_stream = container.streams.video[0]
+    for frame in frames:
+        timestamp_ms = round(frame.timestamp_seconds * 1_000.0)
+        if previous_timestamp_ms is not None and timestamp_ms <= previous_timestamp_ms:
+            raise ValueError(
+                "MediaPipe requires strictly increasing millisecond timestamps; "
+                f"frame {frame.frame_index} produced {timestamp_ms} after {previous_timestamp_ms}"
+            )
+        previous_timestamp_ms = timestamp_ms
 
-            for frame_index, frame in enumerate(container.decode(video_stream)):
-                if frame.pts is None or frame.time_base is None:
-                    raise ValueError(
-                        f"Decoded frame {frame_index} has no presentation timestamp or time base"
-                    )
-                timestamp_seconds = float(frame.pts * frame.time_base)
-                if not math.isfinite(timestamp_seconds):
-                    raise ValueError(
-                        f"Decoded frame {frame_index} has non-finite timestamp {timestamp_seconds}"
-                    )
-                if timestamp_seconds < start_seconds:
-                    continue
-                if end_seconds is not None and timestamp_seconds >= end_seconds:
-                    break
+        detected_landmarks = detector.detect(frame.rgb, timestamp_ms)
+        if detected_landmarks is None:
+            landmark_row = np.full((_LANDMARK_COUNT, 3), np.nan, dtype=np.float32)
+            detected = False
+        else:
+            if detected_landmarks.dtype != np.dtype(np.float32):
+                raise TypeError(
+                    f"MediaPipe landmarks must have dtype float32, got {detected_landmarks.dtype}"
+                )
+            if detected_landmarks.shape != (_LANDMARK_COUNT, 3):
+                raise ValueError(
+                    "MediaPipe landmarks must have shape "
+                    f"({_LANDMARK_COUNT}, 3), got {detected_landmarks.shape}"
+                )
+            landmark_row = detected_landmarks
+            detected = True
 
-                timestamp_ms = round(timestamp_seconds * 1_000.0)
-                if previous_timestamp_ms is not None and timestamp_ms <= previous_timestamp_ms:
-                    raise ValueError(
-                        "MediaPipe requires strictly increasing millisecond timestamps; "
-                        f"frame {frame_index} produced {timestamp_ms} after {previous_timestamp_ms}"
-                    )
-                previous_timestamp_ms = timestamp_ms
-
-                rgb_frame = np.asarray(frame.to_ndarray(format="rgb24"), dtype=np.uint8)
-                if rgb_frame.ndim != 3 or rgb_frame.shape[2] != 3:
-                    raise ValueError(
-                        "Decoded RGB frame must have shape (height, width, 3), "
-                        f"got {rgb_frame.shape}"
-                    )
-
-                detected_landmarks = detector.detect(rgb_frame, timestamp_ms)
-                if detected_landmarks is None:
-                    landmark_row = np.full((_LANDMARK_COUNT, 3), np.nan, dtype=np.float32)
-                    detected = False
-                else:
-                    if detected_landmarks.dtype != np.dtype(np.float32):
-                        raise TypeError(
-                            "MediaPipe landmarks must have dtype float32, "
-                            f"got {detected_landmarks.dtype}"
-                        )
-                    if detected_landmarks.shape != (_LANDMARK_COUNT, 3):
-                        raise ValueError(
-                            "MediaPipe landmarks must have shape "
-                            f"({_LANDMARK_COUNT}, 3), got {detected_landmarks.shape}"
-                        )
-                    landmark_row = detected_landmarks
-                    detected = True
-
-                frame_indices.append(frame_index)
-                timestamps_seconds.append(timestamp_seconds)
-                landmark_rows.append(landmark_row)
-                detection_values.append(detected)
-    except av.FFmpegError as error:
-        raise ValueError(f"Could not decode media file {video_path}: {error}") from error
+        frame_indices.append(frame.frame_index)
+        timestamps_seconds.append(frame.timestamp_seconds)
+        landmark_rows.append(landmark_row)
+        detection_values.append(detected)
 
     if not frame_indices:
-        raise ValueError(
-            f"No decoded video frames fall within [{start_seconds}, {end_seconds}) seconds"
-        )
+        raise ValueError("Landmark tracking requires at least one decoded video frame")
 
     return FaceLandmarkTrack(
         tracker_name="mediapipe-face-landmarker",

@@ -1,97 +1,59 @@
-"""Backend-independent decoded video data."""
+"""Backend-independent decoded-video data contracts."""
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
 
-VideoFrameArray = NDArray[np.uint8]
-TimestampArray = NDArray[np.float64]
-
 
 @dataclass(frozen=True, slots=True, eq=False)
-class VideoData:
-    """Decoded RGB video frames and their source timestamps.
+class DecodedVideoFrame:
+    """One decoded RGB frame on the source-media timeline.
+
+    The shared video integration yields these records one at a time. Streaming code does not
+    retain previous frames, although consumers may explicitly keep arrays when their workflow
+    requires it. The pixel buffer is stored without copying and must be treated as read-only.
 
     Parameters
     ----------
-    frames
-        RGB frames with shape ``(frame_count, height, width, 3)``, dtype ``uint8``, and values in
-        the inclusive range ``[0, 255]``.
-    timestamps_seconds
-        One timestamp per frame with shape ``(frame_count,)`` and dtype ``float64``. Values are
-        finite, strictly increasing seconds on the source media timeline.
-
-    Notes
-    -----
-    Arrays are stored without copying to avoid duplicating large video buffers. Although the
-    dataclass fields cannot be rebound, NumPy buffers remain mutable and callers should treat them
-    as read-only after construction.
+    frame_index
+        Zero-based decode index in the source video stream. The index remains tied to the source,
+        so the first frame in a requested interval may have a value greater than zero.
+    timestamp_seconds
+        Finite presentation timestamp in seconds on the source-media timeline.
+    rgb
+        RGB pixels with shape ``(height, width, 3)``, dtype ``uint8``, and values in the inclusive
+        range ``[0, 255]``.
 
     Raises
     ------
     TypeError
-        If either value is not a NumPy array.
+        If the frame index is not an integer or the pixel value is not a NumPy array.
     ValueError
-        If either array violates its documented shape, dtype, size, or timestamp invariants.
+        If the frame index, timestamp, dtype, or pixel shape violates the contract.
     """
 
-    frames: VideoFrameArray
-    timestamps_seconds: TimestampArray
+    frame_index: int
+    timestamp_seconds: float
+    rgb: NDArray[np.uint8]
 
     def __post_init__(self) -> None:
-        """Validate the decoded video data contract."""
-        if not isinstance(self.frames, np.ndarray):
-            raise TypeError(f"frames must be a NumPy array; observed {type(self.frames).__name__}")
-        if self.frames.dtype != np.dtype(np.uint8):
-            raise ValueError(f"frames must have dtype uint8; observed {self.frames.dtype}")
-        if self.frames.ndim != 4 or self.frames.shape[-1] != 3:
-            raise ValueError(
-                "frames must have shape (frame_count, height, width, 3); "
-                f"observed {self.frames.shape}"
-            )
-        if self.frames.shape[0] == 0:
-            raise ValueError("frames must contain at least one frame; observed frame_count 0")
-        if self.frames.shape[1] == 0 or self.frames.shape[2] == 0:
-            raise ValueError(
-                f"frames must have positive height and width; observed shape {self.frames.shape}"
-            )
-
-        if not isinstance(self.timestamps_seconds, np.ndarray):
+        """Validate the frame identity, timestamp, and RGB pixel contract."""
+        if isinstance(self.frame_index, bool) or not isinstance(self.frame_index, int):
             raise TypeError(
-                "timestamps_seconds must be a NumPy array; "
-                f"observed {type(self.timestamps_seconds).__name__}"
+                f"frame_index must be an integer, got {type(self.frame_index).__name__}"
             )
-        if self.timestamps_seconds.dtype != np.dtype(np.float64):
-            raise ValueError(
-                "timestamps_seconds must have dtype float64; "
-                f"observed {self.timestamps_seconds.dtype}"
-            )
-        if self.timestamps_seconds.ndim != 1:
-            raise ValueError(
-                "timestamps_seconds must have shape (frame_count,); "
-                f"observed {self.timestamps_seconds.shape}"
-            )
-        if self.timestamps_seconds.shape[0] != self.frames.shape[0]:
-            raise ValueError(
-                "timestamps_seconds must contain one value per frame; "
-                f"observed {self.timestamps_seconds.shape[0]} timestamps for "
-                f"{self.frames.shape[0]} frames"
-            )
-        if not np.all(np.isfinite(self.timestamps_seconds)):
-            invalid_count = int(np.count_nonzero(~np.isfinite(self.timestamps_seconds)))
-            raise ValueError(
-                f"timestamps_seconds must contain only finite values; observed {invalid_count} "
-                "non-finite values"
-            )
+        if self.frame_index < 0:
+            raise ValueError(f"frame_index must be non-negative, got {self.frame_index}")
+        if not math.isfinite(self.timestamp_seconds):
+            raise ValueError(f"timestamp_seconds must be finite, got {self.timestamp_seconds}")
 
-        timestamp_differences = np.diff(self.timestamps_seconds)
-        invalid_order = np.flatnonzero(timestamp_differences <= 0)
-        if invalid_order.size:
-            first_index = int(invalid_order[0])
-            raise ValueError(
-                "timestamps_seconds must be strictly increasing; "
-                f"observed {self.timestamps_seconds[first_index]} then "
-                f"{self.timestamps_seconds[first_index + 1]} at indices "
-                f"{first_index} and {first_index + 1}"
-            )
+        if not isinstance(self.rgb, np.ndarray):
+            raise TypeError(f"rgb must be a NumPy array, got {type(self.rgb).__name__}")
+        if self.rgb.dtype != np.dtype(np.uint8):
+            raise ValueError(f"rgb must have dtype uint8, got {self.rgb.dtype}")
+        if self.rgb.ndim != 3 or self.rgb.shape[2:] != (3,):
+            raise ValueError(f"rgb must have shape (height, width, 3), got {self.rgb.shape}")
+        if self.rgb.shape[0] == 0 or self.rgb.shape[1] == 0:
+            raise ValueError(f"rgb must have positive height and width, got shape {self.rgb.shape}")

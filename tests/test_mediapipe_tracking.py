@@ -1,4 +1,5 @@
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import ClassVar
@@ -6,6 +7,8 @@ from typing import ClassVar
 import numpy as np
 import pytest
 
+from talkingfacekit import DecodedVideoFrame
+from talkingfacekit.tracking import mediapipe as mediapipe_tracking
 from talkingfacekit.tracking.mediapipe import MediaPipeFaceTracker
 
 FIXTURE = Path(__file__).parent / "fixtures" / "example1.webm"
@@ -107,6 +110,46 @@ def test_streams_frames_through_mediapipe_and_preserves_timeline(
     assert FakeLandmarker.observed_timestamps_ms == [0, 42, 83]
     assert FakeImage.observed_shapes == [(1080, 1920, 3)] * 3
     assert FakeLandmarker.closed is True
+
+
+def test_consumes_the_shared_video_frame_stream(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_mediapipe(monkeypatch)
+    model_path = tmp_path / "face_landmarker.task"
+    model_path.write_bytes(b"fake model handled by fake MediaPipe")
+    video_path = Path("video-is-not-opened-by-the-tracker.webm")
+    observed_calls: list[tuple[Path, float, float | None]] = []
+
+    def fake_stream_video_frames(
+        path: str | Path,
+        *,
+        start_seconds: float = 0.0,
+        end_seconds: float | None = None,
+    ) -> Iterator[DecodedVideoFrame]:
+        observed_calls.append((Path(path), start_seconds, end_seconds))
+        yield DecodedVideoFrame(
+            frame_index=7,
+            timestamp_seconds=0.25,
+            rgb=np.zeros((2, 3, 3), dtype=np.uint8),
+        )
+
+    monkeypatch.setattr(
+        mediapipe_tracking,
+        "stream_video_frames",
+        fake_stream_video_frames,
+    )
+
+    track = MediaPipeFaceTracker(model_path).track(
+        video_path,
+        start_seconds=0.2,
+        end_seconds=0.3,
+    )
+
+    assert observed_calls == [(video_path, 0.2, 0.3)]
+    assert track.frame_indices.tolist() == [7]
+    assert track.timestamps_seconds.tolist() == [0.25]
 
 
 def test_rejects_missing_model_before_loading_mediapipe(tmp_path: Path) -> None:

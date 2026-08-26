@@ -59,13 +59,17 @@ class FaceLandmarkTrack:
                 raise ValueError(f"{field_name} must not be empty")
 
         if self.frame_indices.dtype != np.dtype(np.int64):
-            raise TypeError(f"frame_indices must have dtype int64, got {self.frame_indices.dtype}")
+            raise TypeError(
+                f"frame_indices must have dtype int64, got {self.frame_indices.dtype}"
+            )
         if self.timestamps_seconds.dtype != np.dtype(np.float64):
             raise TypeError(
                 f"timestamps_seconds must have dtype float64, got {self.timestamps_seconds.dtype}"
             )
         if self.landmarks.dtype != np.dtype(np.float32):
-            raise TypeError(f"landmarks must have dtype float32, got {self.landmarks.dtype}")
+            raise TypeError(
+                f"landmarks must have dtype float32, got {self.landmarks.dtype}"
+            )
         if self.detected.dtype != np.dtype(np.bool_):
             raise TypeError(f"detected must have dtype bool, got {self.detected.dtype}")
 
