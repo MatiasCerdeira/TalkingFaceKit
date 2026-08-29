@@ -1,5 +1,6 @@
 """Core types and the user-facing talking-face sequence aggregate."""
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +29,11 @@ class TalkingFaceSequence:
         Start of the represented interval in seconds.
     end_seconds
         End of the represented interval in seconds, or ``None`` when it is unknown or unbounded.
+
+    Raises
+    ------
+    ValueError
+        If the represented interval is invalid.
     """
 
     path: Path
@@ -37,6 +43,24 @@ class TalkingFaceSequence:
     _landmark_tracks: dict[str, FaceLandmarkTrack] = field(
         default_factory=dict, init=False, repr=False
     )
+
+    def __post_init__(self) -> None:
+        """Validate the represented source-media interval."""
+        if not math.isfinite(self.start_seconds) or self.start_seconds < 0.0:
+            raise ValueError(
+                f"start_seconds must be finite and non-negative, got {self.start_seconds}"
+            )
+
+        if self.end_seconds is not None:
+            if not math.isfinite(self.end_seconds):
+                raise ValueError(
+                    f"end_seconds must be finite when provided, got {self.end_seconds}"
+                )
+            if self.end_seconds <= self.start_seconds:
+                raise ValueError(
+                    "end_seconds must be greater than start_seconds, "
+                    f"got start={self.start_seconds}, end={self.end_seconds}"
+                )
 
     @classmethod
     def from_video(cls, video_path: str | Path) -> "TalkingFaceSequence":
@@ -72,6 +96,54 @@ class TalkingFaceSequence:
             metadata=metadata,
             start_seconds=0.0,
             end_seconds=metadata.stream_duration_seconds,
+        )
+
+    def clip(
+        self,
+        start_seconds: float,
+        end_seconds: float | None = None,
+    ) -> "TalkingFaceSequence":
+        """Create a lightweight view of a smaller source-timeline interval.
+
+        The new sequence reuses the source path and metadata without decoding media. Timestamps
+        remain relative to the original source, and attached landmark tracks are not copied.
+
+        Parameters
+        ----------
+        start_seconds
+            Inclusive start in seconds on the source-media timeline.
+        end_seconds
+            Exclusive end in seconds, or ``None`` to use this sequence's current end.
+
+        Returns
+        -------
+        TalkingFaceSequence
+            New sequence representing the requested interval.
+
+        Raises
+        ------
+        ValueError
+            If the interval is invalid or extends outside this sequence.
+        """
+        resolved_end_seconds = self.end_seconds if end_seconds is None else end_seconds
+        if start_seconds < self.start_seconds:
+            raise ValueError(
+                "clip start_seconds must not precede the current sequence start, "
+                f"got {start_seconds} before {self.start_seconds}"
+            )
+        if self.end_seconds is not None and (
+            resolved_end_seconds is None or resolved_end_seconds > self.end_seconds
+        ):
+            raise ValueError(
+                "clip end_seconds must not exceed the current sequence end, "
+                f"got {resolved_end_seconds} after {self.end_seconds}"
+            )
+
+        return TalkingFaceSequence(
+            path=self.path,
+            metadata=self.metadata,
+            start_seconds=start_seconds,
+            end_seconds=resolved_end_seconds,
         )
 
     @property

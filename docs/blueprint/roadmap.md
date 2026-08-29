@@ -50,20 +50,20 @@ Video local a landmarks MediaPipe persistidos y mesh HTML.
 ### Capacidades existentes
 
 - `TalkingFaceSequence.from_video`;
-- `VideoMetadata`;
+- `TalkingFaceSequence.clip` con intervalos sobre la línea temporal fuente;
+- `VideoMetadata` con validación de dimensiones, FPS y duración;
 - `DecodedVideoFrame` y `stream_video_frames`;
 - `FaceLandmarkTrack` y `LandmarkTracker`;
 - `MediaPipeFaceTracker` para un rostro;
 - NPZ de landmarks v1;
 - `FaceMeshTrack` y conversión MediaPipe 468/852;
 - renderer Plotly offline;
-- CLI `extract-landmarks`, `inspect-landmarks`, `render-mesh`;
+- CLI `extract-landmarks` con intervalo, `inspect-landmarks`, `render-mesh`;
 - tests con fixtures chicos y backends fake.
 
 ### Deuda visible
 
-- metadata no valida sus invariantes;
-- la CLI de tracking no expone intervalo o thresholds;
+- la CLI de tracking no expone thresholds;
 - provenance persistida es mínima;
 - sólo hay un rostro y un backend;
 - no existe audio core;
@@ -91,7 +91,6 @@ intervalo desde Python y CLI.
 
 - si `end_seconds` de una secuencia creada desde video debe usar duración reportada o quedar
   ilimitado cuando la duración es dudosa;
-- semántica de rebasing al recortar;
 - cómo exponer múltiples streams sin romper `VideoMetadata`.
 
 ### Fuera de alcance

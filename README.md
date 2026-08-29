@@ -30,6 +30,9 @@ La clase ofrece la API principal, pero delega la inspección a la integración c
 modelo directamente no abre archivos ni realiza otras operaciones de entrada/salida. La clase no
 conserva frames decodificados ni audio en memoria.
 
+`VideoMetadata` exige dimensiones positivas. Cuando los FPS o la duración están disponibles,
+también deben ser valores finitos y positivos.
+
 ### Decodificar frames por streaming
 
 La decodificación también está centralizada en la integración de video. `stream_video_frames`
@@ -49,6 +52,17 @@ El intervalo es semiabierto: `[start_seconds, end_seconds)`. Los índices y time
 stream original; la función no usa los FPS para inventar tiempos. La integración conserva como
 máximo el frame que está entregando en ese momento. Un consumidor puede retener explícitamente sus
 arrays, pero hacerlo para muchos frames aumenta el uso de memoria.
+
+`TalkingFaceSequence` usa las mismas reglas: el inicio debe ser finito y no negativo, y el final,
+cuando existe, debe ser finito y posterior al inicio.
+
+Un clip lógico reutiliza la ruta y la metadata sin decodificar ni copiar el video. Sus timestamps
+permanecen sobre la línea temporal original:
+
+```python
+sequence = TalkingFaceSequence.from_video("portrait.webm")
+clip = sequence.clip(0.5, 1.5)
+```
 
 Los trackers consumen este stream compartido en lugar de abrir el video por su cuenta. Así, la
 selección del stream, la conversión a RGB y las reglas de timestamps permanecen iguales para
@@ -112,6 +126,17 @@ uv run python -m talkingfacekit extract-landmarks `
   tests/fixtures/example1.webm `
   --model models/face_landmarker.task `
   --output outputs/example1-landmarks.npz
+```
+
+Para procesar solamente un intervalo, se agregan límites sobre la línea temporal original:
+
+```powershell
+uv run python -m talkingfacekit extract-landmarks `
+  tests/fixtures/example1.webm `
+  --model models/face_landmarker.task `
+  --output outputs/example1-clip-landmarks.npz `
+  --start-seconds 0.5 `
+  --end-seconds 1.5
 ```
 
 El archivo comprimido conserva una entrada de landmarks por cada frame decodificado dentro del

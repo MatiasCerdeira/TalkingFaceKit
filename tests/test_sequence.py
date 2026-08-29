@@ -68,6 +68,79 @@ def test_constructs_sequence_without_accessing_its_media_path() -> None:
     assert sequence.end_seconds == 1.5
 
 
+@pytest.mark.parametrize("start_seconds", [-1.0, float("inf"), float("-inf"), float("nan")])
+def test_rejects_invalid_sequence_start(start_seconds: float) -> None:
+    metadata = VideoMetadata(640, 480, 24.0, 2.0, True)
+
+    with pytest.raises(ValueError, match="start_seconds must be finite and non-negative"):
+        TalkingFaceSequence(Path("portrait.webm"), metadata, start_seconds=start_seconds)
+
+
+@pytest.mark.parametrize("end_seconds", [float("inf"), float("-inf"), float("nan")])
+def test_rejects_non_finite_sequence_end(end_seconds: float) -> None:
+    metadata = VideoMetadata(640, 480, 24.0, 2.0, True)
+
+    with pytest.raises(ValueError, match="end_seconds must be finite when provided"):
+        TalkingFaceSequence(Path("portrait.webm"), metadata, end_seconds=end_seconds)
+
+
+@pytest.mark.parametrize("end_seconds", [0.5, 0.4])
+def test_rejects_sequence_end_not_after_start(end_seconds: float) -> None:
+    metadata = VideoMetadata(640, 480, 24.0, 2.0, True)
+
+    with pytest.raises(ValueError, match="end_seconds must be greater than start_seconds"):
+        TalkingFaceSequence(
+            Path("portrait.webm"),
+            metadata,
+            start_seconds=0.5,
+            end_seconds=end_seconds,
+        )
+
+
+def test_clips_sequence_without_decoding_or_mutating_the_parent() -> None:
+    metadata = VideoMetadata(640, 480, 24.0, 2.0, True)
+    sequence = TalkingFaceSequence(Path("portrait.webm"), metadata, 0.5, 1.5)
+    sequence.track_landmarks(FakeTracker(make_track()), name="parent")
+
+    clip = sequence.clip(0.75, 1.25)
+
+    assert clip is not sequence
+    assert clip.path == sequence.path
+    assert clip.metadata is metadata
+    assert clip.start_seconds == 0.75
+    assert clip.end_seconds == 1.25
+    assert dict(clip.landmark_tracks) == {}
+    assert sequence.start_seconds == 0.5
+    assert sequence.end_seconds == 1.5
+    assert "parent" in sequence.landmark_tracks
+
+
+def test_clip_uses_the_parent_end_when_end_is_omitted() -> None:
+    metadata = VideoMetadata(640, 480, 24.0, 2.0, True)
+    sequence = TalkingFaceSequence(Path("portrait.webm"), metadata, 0.5, 1.5)
+
+    clip = sequence.clip(1.0)
+
+    assert clip.start_seconds == 1.0
+    assert clip.end_seconds == 1.5
+
+
+def test_rejects_clip_start_before_parent() -> None:
+    metadata = VideoMetadata(640, 480, 24.0, 2.0, True)
+    sequence = TalkingFaceSequence(Path("portrait.webm"), metadata, 0.5, 1.5)
+
+    with pytest.raises(ValueError, match="clip start_seconds must not precede"):
+        sequence.clip(0.4, 1.0)
+
+
+def test_rejects_clip_end_after_parent() -> None:
+    metadata = VideoMetadata(640, 480, 24.0, 2.0, True)
+    sequence = TalkingFaceSequence(Path("portrait.webm"), metadata, 0.5, 1.5)
+
+    with pytest.raises(ValueError, match="clip end_seconds must not exceed"):
+        sequence.clip(1.0, 1.6)
+
+
 def test_tracks_landmarks_and_attaches_the_complete_result() -> None:
     metadata = VideoMetadata(640, 480, 24.0, 2.0, True)
     sequence = TalkingFaceSequence(Path("portrait.webm"), metadata, 0.5, 1.5)

@@ -45,6 +45,12 @@ sequence methods attach them only after success so failures do not leave partial
 and future result records remain immutable where practical; integrations must not mutate sequence
 attributes directly.
 
+The represented interval stays on the source-media timeline. Its start must be finite and
+non-negative; its optional end must be finite and strictly greater than its start.
+`TalkingFaceSequence.clip(...)` returns a new lightweight sequence contained within the current
+interval. It reuses the source path and metadata, preserves source timestamps, performs no media
+I/O, and does not copy attached result tracks.
+
 Landmark tracking follows this pattern through `sequence.track_landmarks(tracker, name=...)`. The
 sequence supplies its path and interval to a small backend contract, then owns the completed result.
 Names make multiple backends or configurations comparable without coupling the aggregate to their
@@ -84,6 +90,9 @@ Avoid empty directories and placeholder abstractions. The first implementation s
 - Use seconds for public durations and timestamps unless an API explicitly declares another unit.
 - Never infer or silently change FPS, sample rate, color order, or synchronization metadata.
 - Keep backend-specific tensors and objects outside the core model.
+
+`VideoMetadata` requires positive encoded width and height. Average FPS and stream duration may be
+unknown, represented by `None`; when present, both values must be finite and positive.
 
 `DecodedVideoFrame` establishes the shared streaming contract:
 
