@@ -84,7 +84,7 @@ def test_extracts_the_complete_track_to_npz(
     video_path, start_seconds, end_seconds = FakeMediaPipeFaceTracker.calls[0]
     assert video_path == FIXTURE
     assert start_seconds == 0.0
-    assert end_seconds is not None
+    assert end_seconds is None
     assert output_path.is_file()
     assert load_landmark_track(output_path).landmarks.shape == (2, 2, 3)
     assert "detected frames: 2" in capsys.readouterr().out
@@ -116,6 +116,33 @@ def test_extracts_only_the_requested_video_interval(
 
     assert exit_code == 0
     assert FakeMediaPipeFaceTracker.calls == [(FIXTURE, 0.5, 1.5)]
+    assert output_path.is_file()
+
+
+def test_uses_the_sequence_start_when_only_a_cli_end_is_requested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    FakeMediaPipeFaceTracker.result = make_landmark_track()
+    FakeMediaPipeFaceTracker.calls = []
+    monkeypatch.setattr(cli, "MediaPipeFaceTracker", FakeMediaPipeFaceTracker)
+    output_path = tmp_path / "clip_from_start_landmarks.npz"
+
+    exit_code = cli.main(
+        [
+            "extract-landmarks",
+            str(FIXTURE),
+            "--model",
+            "model.task",
+            "--output",
+            str(output_path),
+            "--end-seconds",
+            "1.5",
+        ]
+    )
+
+    assert exit_code == 0
+    assert FakeMediaPipeFaceTracker.calls == [(FIXTURE, 0.0, 1.5)]
     assert output_path.is_file()
 
 

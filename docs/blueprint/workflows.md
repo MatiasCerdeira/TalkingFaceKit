@@ -11,10 +11,11 @@ para discutir y validar antes de implementarlas.
 from talkingfacekit import TalkingFaceSequence
 
 sequence = TalkingFaceSequence.from_video("session.webm")
-metadata = sequence.metadata
+metadata = sequence.source.metadata
 ```
 
 Actualmente se informa ancho, alto, FPS promedio opcional, duración opcional y presencia de audio.
+La metadata describe siempre el stream completo; el intervalo pertenece a `sequence`.
 
 ### Inspección completa — objetivo
 
@@ -33,14 +34,15 @@ for stream in media.audio_streams:
 La selección de stream debe ser explícita si hay más de uno. Rotación, pixel aspect ratio, color
 primaries, transfer function y time base no pueden aplicarse o descartarse silenciosamente.
 
-### Recortar una vista — objetivo
+### Recortar una vista — disponible
 
 ```python
 clip = sequence.clip(start_seconds=12.5, end_seconds=18.0)
 ```
 
-`clip` debería crear una vista barata sobre la misma fuente, conservar timestamps de origen por
-defecto y no decodificar. Una operación separada puede rebasing el timeline a cero.
+`clip` crea una secuencia barata que comparte el mismo `VideoSource`, conserva timestamps de origen,
+no decodifica y comienza sin resultados adjuntos. Una operación futura separada puede rebasing el
+timeline a cero.
 
 ## 2. Frames de video
 

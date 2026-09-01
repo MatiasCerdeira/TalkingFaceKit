@@ -37,26 +37,36 @@ boundaries without containing backend-specific logic.
 
 ## Sequence aggregate pattern
 
-`TalkingFaceSequence` is the mutable, user-facing aggregate for the data and operations associated
-with one sequence. Alternate constructors such as `TalkingFaceSequence.from_video(path)` provide a
-convenient API but delegate file and framework work to integration modules. Expensive operations
-such as decoding and tracking remain explicit. Integrations compute typed results first, and
-sequence methods attach them only after success so failures do not leave partial state. Metadata
-and future result records remain immutable where practical; integrations must not mutate sequence
-attributes directly.
+`VideoSource` is the immutable identity of source media: its path and `VideoMetadata` always refer
+to the complete primary video stream. `TalkingFaceSequence` is the user-facing aggregate for one
+temporal selection and its results. Multiple sequences may share one source while owning distinct
+intervals and result mappings. Source and interval fields remain immutable after validation; named
+result mappings are the aggregate's intentionally mutable state.
+
+Alternate constructors such as `TalkingFaceSequence.from_video(path)` provide a convenient API but
+delegate file and framework work to integration modules. Expensive operations such as decoding and
+tracking remain explicit. Integrations compute typed results first, and sequence methods attach
+them only after success so failures do not leave partial state.
 
 The represented interval stays on the source-media timeline. Its start must be finite and
 non-negative; its optional end must be finite and strictly greater than its start.
 `TalkingFaceSequence.clip(...)` returns a new lightweight sequence contained within the current
-interval. It reuses the source path and metadata, preserves source timestamps, performs no media
-I/O, and does not copy attached result tracks.
+interval. It reuses the same `VideoSource`, preserves source timestamps, performs no media I/O, and
+does not copy attached result tracks. Its `duration_seconds` property describes only the declared
+sequence interval; `source.metadata.stream_duration_seconds` remains metadata for the complete
+stream.
+
+A sequence created by `from_video` starts at zero and has `end_seconds=None`, meaning decode to
+end-of-stream. Reported stream/container duration is informational metadata, not an absolute source
+timestamp, so it is not used as the sequence end. This avoids truncating media whose first PTS is
+positive or whose reported duration is approximate.
 
 Landmark tracking follows this pattern through `sequence.track_landmarks(tracker, name=...)`. The
-sequence supplies its path and interval to a small backend contract, then owns the completed result.
-Names make multiple backends or configurations comparable without coupling the aggregate to their
-implementation details. Replacement is explicit, and a backend failure leaves the existing mapping
-unchanged. Tracker implementations consume the shared video-frame stream instead of opening PyAV
-containers themselves.
+sequence supplies its source path and interval to a small backend contract, then owns the completed
+result. Names make multiple backends or configurations comparable without coupling the aggregate
+to their implementation details. Replacement is explicit, and a backend failure leaves the
+existing mapping unchanged. Tracker implementations consume the shared video-frame stream instead
+of opening PyAV containers themselves.
 
 ## Intended package boundaries
 
@@ -66,7 +76,7 @@ Create these modules only when real code needs them:
 src/talkingfacekit/
 ├── metadata.py       Backend-independent metadata value types
 ├── mesh.py           Backend-independent animated triangular-mesh contract
-├── video.py          Backend-independent streamed-frame contract
+├── video.py          Backend-independent source and streamed-frame contracts
 ├── rendering/
 │   └── plotly.py      Optional offline interactive HTML renderer
 ├── sequence.py       User-facing sequence aggregate
@@ -91,8 +101,13 @@ Avoid empty directories and placeholder abstractions. The first implementation s
 - Never infer or silently change FPS, sample rate, color order, or synchronization metadata.
 - Keep backend-specific tensors and objects outside the core model.
 
-`VideoMetadata` requires positive encoded width and height. Average FPS and stream duration may be
-unknown, represented by `None`; when present, both values must be finite and positive.
+`VideoMetadata` requires integer positive encoded width and height plus boolean audio presence.
+Average FPS and stream duration may be unknown, represented by `None`; when present, both values
+must be finite and positive.
+
+`VideoSource` contains a normalized `Path` and the complete source-stream metadata. Constructing it
+does not access the filesystem. A sequence and every clip derived from it share the same source;
+the source never contains selection-specific duration or result tracks.
 
 `DecodedVideoFrame` establishes the shared streaming contract:
 
@@ -183,7 +198,9 @@ contracts.
 | NumPy as the core numerical representation | Framework-independent arrays and NPZ support.                                                          |
 | Ruff, mypy strict mode, and pytest         | Automated style, typing, and behavior checks.                                                          |
 | Backend-independent core                   | Trackers and media frameworks can change without rewriting domain types.                               |
-| Mutable sequence aggregate                 | One user-facing object coordinates explicit operations and owns their results.                         |
+| Stable sequence scope, mutable results      | Source and interval cannot drift after validation; named completed results remain attachable.          |
+| Shared immutable `VideoSource`              | Separates complete-stream identity/metadata from per-sequence intervals and results.                    |
+| Open-ended sequence from inspected video    | Reported duration is not assumed to be an absolute final PTS; decoding continues safely to EOF.         |
 | PyAV isolated under `io`                   | Metadata inspection and frame decoding share one media boundary instead of leaking into trackers.      |
 | Optional MediaPipe landmark backend        | Provides the first local, cross-platform tracking slice without making it a core dependency.           |
 | Named transactional landmark results       | Supports comparisons and prevents failed work from leaving partial sequence state.                     |

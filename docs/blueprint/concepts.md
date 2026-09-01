@@ -2,11 +2,13 @@
 
 ## La secuencia como agregado
 
-**Disponible.** `TalkingFaceSequence` representa el origen, la metadata, el intervalo temporal y
-los resultados asociados a una persona hablando. Su construcción directa es barata y no toca el
-filesystem. Los constructores alternativos pueden inspeccionar fuentes mediante integraciones.
+**Disponible.** `VideoSource` representa de forma inmutable la ruta y la metadata del stream
+completo. `TalkingFaceSequence` referencia una fuente, delimita un intervalo temporal y coordina
+los resultados asociados. Su construcción directa es barata y no toca el filesystem. Los
+constructores alternativos pueden inspeccionar fuentes mediante integraciones.
 
-La secuencia es mutable como agregado, pero los resultados completos deberían ser valores
+La fuente y el intervalo de una secuencia no se reasignan después de validarse. El mapping de
+resultados nombrados es su estado mutable; los resultados completos deberían ser valores
 inmutables en la práctica. Una operación costosa:
 
 1. recibe la fuente y el intervalo;
@@ -18,9 +20,11 @@ Este patrón evita estados parciales y ya se usa en `track_landmarks`.
 
 ## Fuente, intervalo y timeline
 
-**Disponible parcialmente.** Una fuente local se identifica con `Path`; el primer stream de video
-define metadata y frames. Un intervalo público usa segundos y la forma semiabierta
+**Disponible parcialmente.** Una fuente local se identifica con `VideoSource`; el primer stream de
+video define metadata y frames. Un intervalo público usa segundos y la forma semiabierta
 `[start_seconds, end_seconds)`. `end_seconds=None` significa continuar hasta el final disponible.
+La duración reportada permanece en `source.metadata`; `sequence.duration_seconds` describe sólo un
+intervalo cerrado y devuelve `None` cuando está abierto.
 
 Los timestamps son datos, no una consecuencia de los FPS. TalkingFaceKit debería conservar el
 presentation timestamp del stream y sólo cambiar de base temporal mediante una operación explícita.

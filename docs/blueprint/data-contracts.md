@@ -29,8 +29,29 @@ aceptado hasta incorporarse a [`docs/architecture.md`](../architecture.md) junto
 | `stream_duration_seconds` | `float | None` | duración informada por stream o contenedor |
 | `has_audio` | `bool` | existe al menos un stream de audio |
 
-Pendiente actual: el dataclass todavía no valida positividad o finitud. Una futura ampliación debe
-definir compatibilidad antes de agregar campos.
+El dataclass exige dimensiones enteras positivas, `has_audio` booleano y FPS/duración finitos y
+positivos cuando están disponibles.
+
+### `VideoSource`
+
+| Campo | Tipo | Semántica |
+| --- | --- | --- |
+| `path` | `Path` | identidad local de la fuente; construir el valor no accede al filesystem |
+| `metadata` | `VideoMetadata` | metadata del stream completo, nunca del intervalo seleccionado |
+
+`VideoSource` es inmutable y puede compartirse entre varias `TalkingFaceSequence`. El intervalo y
+los resultados pertenecen a cada secuencia, no a la fuente.
+
+### Intervalo de `TalkingFaceSequence`
+
+| Campo/propiedad | Tipo | Semántica |
+| --- | --- | --- |
+| `start_seconds` | `float` | inicio inclusivo sobre el timeline fuente |
+| `end_seconds` | `float | None` | final exclusivo; `None` significa continuar hasta EOF |
+| `duration_seconds` | `float | None` | `end - start` del intervalo declarado, o `None` si está abierto |
+
+Una secuencia creada desde video queda abierta aunque la fuente informe duración: una duración no
+se interpreta como timestamp absoluto. Fuente e intervalo no pueden reasignarse después de validar.
 
 ### `DecodedVideoFrame`
 

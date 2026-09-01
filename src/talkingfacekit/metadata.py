@@ -23,6 +23,8 @@ class VideoMetadata:
 
     Raises
     ------
+    TypeError
+        If either dimension is not an integer or ``has_audio`` is not boolean.
     ValueError
         If either dimension is not positive, or if a provided frame rate or duration is not
         finite and positive.
@@ -36,10 +38,15 @@ class VideoMetadata:
 
     def __post_init__(self) -> None:
         """Validate dimensions, frame rate, and duration."""
+        for field_name, value in (("width", self.width), ("height", self.height)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{field_name} must be an integer, got {type(value).__name__}")
         if self.width <= 0:
             raise ValueError(f"width must be positive, got {self.width}")
         if self.height <= 0:
             raise ValueError(f"height must be positive, got {self.height}")
+        if not isinstance(self.has_audio, bool):
+            raise TypeError(f"has_audio must be boolean, got {type(self.has_audio).__name__}")
 
         if self.average_fps is not None and (
             not math.isfinite(self.average_fps) or self.average_fps <= 0.0

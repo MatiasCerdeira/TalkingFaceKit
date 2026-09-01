@@ -16,22 +16,26 @@ de video:
 from talkingfacekit import TalkingFaceSequence
 
 sequence = TalkingFaceSequence.from_video("video.webm")
+source_metadata = sequence.source.metadata
 
-print(sequence.metadata.width)
-print(sequence.metadata.height)
-print(sequence.metadata.average_fps)
-print(sequence.metadata.stream_duration_seconds)
-print(sequence.metadata.has_audio)
+print(sequence.source.path)
+print(source_metadata.width)
+print(source_metadata.height)
+print(source_metadata.average_fps)
+print(source_metadata.stream_duration_seconds)
+print(source_metadata.has_audio)
 ```
 
 Los FPS y la duración son `None` cuando el archivo no informa esos valores. `from_video` valida que
 la ruta exista, que sea un archivo regular y que el contenedor tenga al menos un stream de video.
-La clase ofrece la API principal, pero delega la inspección a la integración con PyAV; construir el
-modelo directamente no abre archivos ni realiza otras operaciones de entrada/salida. La clase no
+`VideoSource` separa explícitamente la identidad del archivo y la metadata del stream completo. Una
+o más `TalkingFaceSequence` pueden compartir esa fuente y representar intervalos diferentes. La
+clase ofrece la API principal, pero delega la inspección a la integración con PyAV; construir los
+modelos directamente no abre archivos ni realiza otras operaciones de entrada/salida. Ninguno
 conserva frames decodificados ni audio en memoria.
 
-`VideoMetadata` exige dimensiones positivas. Cuando los FPS o la duración están disponibles,
-también deben ser valores finitos y positivos.
+`VideoMetadata` exige dimensiones enteras positivas y presencia de audio booleana. Cuando los FPS
+o la duración están disponibles, también deben ser valores finitos y positivos.
 
 ### Decodificar frames por streaming
 
@@ -56,13 +60,22 @@ arrays, pero hacerlo para muchos frames aumenta el uso de memoria.
 `TalkingFaceSequence` usa las mismas reglas: el inicio debe ser finito y no negativo, y el final,
 cuando existe, debe ser finito y posterior al inicio.
 
-Un clip lógico reutiliza la ruta y la metadata sin decodificar ni copiar el video. Sus timestamps
-permanecen sobre la línea temporal original:
+Un clip lógico reutiliza el mismo `VideoSource` sin decodificar ni copiar el video. Sus timestamps
+permanecen sobre la línea temporal original, comienza sin tracks adjuntos y expone la duración de
+su propio intervalo por separado de la duración informada por la fuente:
 
 ```python
 sequence = TalkingFaceSequence.from_video("portrait.webm")
 clip = sequence.clip(0.5, 1.5)
+
+print(clip.source is sequence.source)  # True
+print(clip.duration_seconds)  # 1.0
+print(clip.source.metadata.stream_duration_seconds)  # duración informada del video completo
 ```
+
+La fuente y los límites de una secuencia no se pueden reasignar después de construirla. Una
+secuencia creada con `from_video` queda abierta hasta EOF (`end_seconds=None`): la duración
+informada permanece como metadata y no se usa como si fuera un timestamp final exacto.
 
 Los trackers consumen este stream compartido en lugar de abrir el video por su cuenta. Así, la
 selección del stream, la conversión a RGB y las reglas de timestamps permanecen iguales para

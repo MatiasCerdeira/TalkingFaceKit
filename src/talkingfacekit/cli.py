@@ -80,14 +80,14 @@ def _build_parser() -> argparse.ArgumentParser:
     extract_parser.add_argument(
         "--start-seconds",
         type=float,
-        default=0.0,
-        help="Inclusive interval start on the source timeline; default: 0.0.",
+        default=None,
+        help="Inclusive interval start on the source timeline; default: sequence start.",
     )
     extract_parser.add_argument(
         "--end-seconds",
         type=float,
         default=None,
-        help="Exclusive interval end on the source timeline; default: source end.",
+        help="Exclusive interval end on the source timeline; default: end of stream.",
     )
     extract_parser.add_argument(
         "--overwrite",
@@ -141,12 +141,14 @@ def _extract_landmarks(arguments: argparse.Namespace) -> int:
     video_path = cast(Path, arguments.video)
     model_path = cast(Path, arguments.model)
     output_path = cast(Path, arguments.output)
-    start_seconds = cast(float, arguments.start_seconds)
+    start_seconds = cast(float | None, arguments.start_seconds)
     end_seconds = cast(float | None, arguments.end_seconds)
     overwrite = cast(bool, arguments.overwrite)
 
     sequence = TalkingFaceSequence.from_video(video_path)
-    sequence = sequence.clip(start_seconds, end_seconds)
+    if start_seconds is not None or end_seconds is not None:
+        resolved_start_seconds = sequence.start_seconds if start_seconds is None else start_seconds
+        sequence = sequence.clip(resolved_start_seconds, end_seconds)
     tracker = MediaPipeFaceTracker(model_path)
     track = sequence.track_landmarks(tracker, name="mediapipe")
     saved_path = save_landmark_track(track, output_path, overwrite=overwrite)

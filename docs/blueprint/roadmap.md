@@ -51,6 +51,7 @@ Video local a landmarks MediaPipe persistidos y mesh HTML.
 
 - `TalkingFaceSequence.from_video`;
 - `TalkingFaceSequence.clip` con intervalos sobre la línea temporal fuente;
+- `VideoSource` compartido e inmutable para ruta y metadata del stream completo;
 - `VideoMetadata` con validación de dimensiones, FPS y duración;
 - `DecodedVideoFrame` y `stream_video_frames`;
 - `FaceLandmarkTrack` y `LandmarkTracker`;
@@ -89,9 +90,7 @@ intervalo desde Python y CLI.
 
 ### Decisiones necesarias
 
-- si `end_seconds` de una secuencia creada desde video debe usar duración reportada o quedar
-  ilimitado cuando la duración es dudosa;
-- cómo exponer múltiples streams sin romper `VideoMetadata`.
+- cómo exponer múltiples streams sin romper `VideoSource` y `VideoMetadata`.
 
 ### Fuera de alcance
 

@@ -96,7 +96,7 @@ Cada entrada marcada como objetivo aparece cuando una entrega real la necesita:
 ```text
 src/talkingfacekit/
 ├── metadata.py              # Disponible: metadata de video
-├── video.py                 # Disponible: frame RGB core
+├── video.py                 # Disponible: fuente inmutable y frame RGB core
 ├── audio.py                 # Objetivo: chunks/tracks de audio core
 ├── timeline.py              # Objetivo condicionado: tiempo compartido y alineación
 ├── mesh.py                  # Disponible: mesh animado core
@@ -142,9 +142,9 @@ No se crean `base.py`, `manager.py`, `factory.py` o `registry.py` genéricos sin
 
 ```text
 TalkingFaceSequence
-├── source reference
-├── media metadata
+├── source: VideoSource
 ├── [start_seconds, end_seconds)
+├── duration_seconds del intervalo declarado
 ├── landmark_tracks: name -> FaceLandmarkTrack
 ├── face_tracks: name -> FaceTrackSet
 ├── audio_tracks: name -> AudioTrack
@@ -153,9 +153,10 @@ TalkingFaceSequence
 └── provenance graph
 ```
 
-No todos los mappings deben agregarse como atributos públicos inmediatamente. Un registro unificado
-de artefactos podría ser mejor después de probar persistencia multipista. Hasta entonces, mappings
-tipados por familia mantienen la API clara.
+`VideoSource` contiene la ruta y la metadata del stream completo y puede compartirse entre varias
+secuencias. No contiene intervalos ni resultados. No todos los mappings deben agregarse como
+atributos públicos inmediatamente. Un registro unificado de artefactos podría ser mejor después de
+probar persistencia multipista. Hasta entonces, mappings tipados por familia mantienen la API clara.
 
 ## Operaciones puras y operaciones con efectos
 

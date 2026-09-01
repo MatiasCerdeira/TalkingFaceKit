@@ -23,11 +23,13 @@ reproducible y segura frente a overwrite.
 uv run python -m talkingfacekit extract-landmarks VIDEO \
   --model MODEL.task \
   --output LANDMARKS.npz \
+  [--start-seconds S] \
+  [--end-seconds S] \
   [--overwrite]
 ```
 
-Procesa un rostro con MediaPipe y guarda un NPZ versionado. Actualmente recorre el intervalo
-completo expuesto por `TalkingFaceSequence.from_video`.
+Procesa un rostro con MediaPipe y guarda un NPZ versionado. Sin límites recorre hasta EOF. Los
+límites opcionales seleccionan `[start_seconds, end_seconds)` sobre el timeline fuente.
 
 ### `inspect-landmarks`
 

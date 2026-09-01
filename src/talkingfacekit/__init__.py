@@ -8,7 +8,7 @@ from talkingfacekit.rendering import render_face_mesh_html
 from talkingfacekit.sequence import TalkingFaceSequence
 from talkingfacekit.tracking import FaceLandmarkTrack, LandmarkTracker
 from talkingfacekit.tracking.mediapipe_mesh import build_mediapipe_face_mesh
-from talkingfacekit.video import DecodedVideoFrame
+from talkingfacekit.video import DecodedVideoFrame, VideoSource
 
 __all__ = [
     "DecodedVideoFrame",
@@ -17,6 +17,7 @@ __all__ = [
     "LandmarkTracker",
     "TalkingFaceSequence",
     "VideoMetadata",
+    "VideoSource",
     "build_mediapipe_face_mesh",
     "load_landmark_track",
     "render_face_mesh_html",

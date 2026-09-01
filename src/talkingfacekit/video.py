@@ -1,10 +1,45 @@
-"""Backend-independent decoded-video data contracts."""
+"""Backend-independent video source and decoded-frame contracts."""
 
 import math
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 from numpy.typing import NDArray
+
+from talkingfacekit.metadata import VideoMetadata
+
+
+@dataclass(frozen=True, slots=True)
+class VideoSource:
+    """Identify source media and its inspected primary-video metadata.
+
+    Constructing a source normalizes its path but performs no filesystem access. The metadata
+    always describes the complete source stream, not a temporal selection made from it.
+
+    Parameters
+    ----------
+    path
+        Path identifying the source media. It does not need to exist at construction time.
+    metadata
+        Metadata for the complete primary video stream.
+
+    Raises
+    ------
+    TypeError
+        If ``metadata`` is not a :class:`VideoMetadata` instance.
+    """
+
+    path: Path
+    metadata: VideoMetadata
+
+    def __post_init__(self) -> None:
+        """Normalize the path and validate the metadata value without opening the source."""
+        object.__setattr__(self, "path", Path(self.path))
+        if not isinstance(self.metadata, VideoMetadata):
+            raise TypeError(
+                f"metadata must be a VideoMetadata instance, got {type(self.metadata).__name__}"
+            )
 
 
 @dataclass(frozen=True, slots=True, eq=False)

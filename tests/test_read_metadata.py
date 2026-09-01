@@ -12,15 +12,17 @@ def test_reads_video_metadata_without_writing_to_stdout(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     sequence = TalkingFaceSequence.from_video(FIXTURE)
-    metadata = sequence.metadata
+    metadata = sequence.source.metadata
 
+    assert sequence.source.path == FIXTURE
     assert metadata.width == 1920
     assert metadata.height == 1080
     assert metadata.average_fps == pytest.approx(23.976, abs=0.001)
     assert metadata.stream_duration_seconds == pytest.approx(2.719, abs=0.001)
     assert metadata.has_audio is True
     assert sequence.start_seconds == 0.0
-    assert sequence.end_seconds == metadata.stream_duration_seconds
+    assert sequence.end_seconds is None
+    assert sequence.duration_seconds is None
     assert capsys.readouterr().out == ""
 
 

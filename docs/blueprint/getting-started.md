@@ -59,8 +59,8 @@ save_landmark_track(landmarks, Path("outputs/portrait-landmarks.npz"))
 
 mesh = build_mediapipe_face_mesh(
     landmarks,
-    image_width=sequence.metadata.width,
-    image_height=sequence.metadata.height,
+    image_width=sequence.source.metadata.width,
+    image_height=sequence.source.metadata.height,
 )
 render_face_mesh_html(mesh, Path("outputs/portrait-mesh.html"))
 ```
@@ -107,12 +107,15 @@ existan varias operaciones reales con una interfaz estable y semántica transacc
 from talkingfacekit import TalkingFaceSequence
 
 sequence = TalkingFaceSequence.from_video("interview.webm")
+metadata = sequence.source.metadata
 
-print(sequence.metadata.width)
-print(sequence.metadata.height)
-print(sequence.metadata.average_fps)
-print(sequence.metadata.stream_duration_seconds)
-print(sequence.metadata.has_audio)
+print(sequence.source.path)
+print(metadata.width)
+print(metadata.height)
+print(metadata.average_fps)
+print(metadata.stream_duration_seconds)
+print(metadata.has_audio)
+print(sequence.duration_seconds)  # None: intervalo abierto hasta EOF
 ```
 
 Los valores ausentes permanecen como `None`; no se deducen a partir de otros campos.

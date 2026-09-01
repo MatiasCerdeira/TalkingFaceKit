@@ -6,6 +6,7 @@ def test_package_can_be_imported() -> None:
     assert talkingfacekit.FaceMeshTrack is not None
     assert talkingfacekit.TalkingFaceSequence is not None
     assert talkingfacekit.VideoMetadata is not None
+    assert talkingfacekit.VideoSource is not None
     assert talkingfacekit.build_mediapipe_face_mesh is not None
     assert talkingfacekit.load_landmark_track is not None
     assert talkingfacekit.render_face_mesh_html is not None

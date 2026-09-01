@@ -7,11 +7,11 @@ from pathlib import Path
 from types import MappingProxyType
 
 from talkingfacekit.io.video import inspect_video_metadata
-from talkingfacekit.metadata import VideoMetadata
 from talkingfacekit.tracking.landmarks import FaceLandmarkTrack, LandmarkTracker
+from talkingfacekit.video import VideoSource
 
 
-@dataclass(slots=True, eq=False)
+@dataclass(frozen=True, slots=True, eq=False)
 class TalkingFaceSequence:
     """Collect the data and operations associated with a talking-face sequence.
 
@@ -20,11 +20,8 @@ class TalkingFaceSequence:
 
     Attributes
     ----------
-    path
-        Path identifying the sequence's source media. The path does not need to exist when the
-        model is constructed.
-    metadata
-        Metadata for the primary video stream.
+    source
+        Immutable source identity and complete-stream metadata. Multiple sequences may share it.
     start_seconds
         Start of the represented interval in seconds.
     end_seconds
@@ -32,12 +29,13 @@ class TalkingFaceSequence:
 
     Raises
     ------
+    TypeError
+        If ``source`` is not a :class:`VideoSource` instance.
     ValueError
         If the represented interval is invalid.
     """
 
-    path: Path
-    metadata: VideoMetadata
+    source: VideoSource
     start_seconds: float = 0.0
     end_seconds: float | None = None
     _landmark_tracks: dict[str, FaceLandmarkTrack] = field(
@@ -46,6 +44,10 @@ class TalkingFaceSequence:
 
     def __post_init__(self) -> None:
         """Validate the represented source-media interval."""
+        if not isinstance(self.source, VideoSource):
+            raise TypeError(
+                f"source must be a VideoSource instance, got {type(self.source).__name__}"
+            )
         if not math.isfinite(self.start_seconds) or self.start_seconds < 0.0:
             raise ValueError(
                 f"start_seconds must be finite and non-negative, got {self.start_seconds}"
@@ -77,7 +79,7 @@ class TalkingFaceSequence:
         Returns
         -------
         TalkingFaceSequence
-            Sequence initialized with metadata for the first video stream.
+            Open-ended sequence initialized with a source for the first video stream.
 
         Raises
         ------
@@ -92,10 +94,9 @@ class TalkingFaceSequence:
         path = Path(video_path)
         metadata = inspect_video_metadata(path)
         return cls(
-            path=path,
-            metadata=metadata,
+            source=VideoSource(path=path, metadata=metadata),
             start_seconds=0.0,
-            end_seconds=metadata.stream_duration_seconds,
+            end_seconds=None,
         )
 
     def clip(
@@ -105,8 +106,8 @@ class TalkingFaceSequence:
     ) -> "TalkingFaceSequence":
         """Create a lightweight view of a smaller source-timeline interval.
 
-        The new sequence reuses the source path and metadata without decoding media. Timestamps
-        remain relative to the original source, and attached landmark tracks are not copied.
+        The new sequence reuses the same :class:`VideoSource` without decoding media. Timestamps
+        remain relative to that source, and attached landmark tracks are not copied.
 
         Parameters
         ----------
@@ -140,11 +141,22 @@ class TalkingFaceSequence:
             )
 
         return TalkingFaceSequence(
-            path=self.path,
-            metadata=self.metadata,
+            source=self.source,
             start_seconds=start_seconds,
             end_seconds=resolved_end_seconds,
         )
+
+    @property
+    def duration_seconds(self) -> float | None:
+        """Duration of this sequence's declared interval in seconds.
+
+        This value is distinct from ``source.metadata.stream_duration_seconds``, which describes
+        the complete source stream. An open-ended sequence has no declared duration and returns
+        ``None`` even when its source reports an estimated duration.
+        """
+        if self.end_seconds is None:
+            return None
+        return self.end_seconds - self.start_seconds
 
     @property
     def landmark_tracks(self) -> Mapping[str, FaceLandmarkTrack]:
@@ -193,7 +205,7 @@ class TalkingFaceSequence:
             raise ValueError(f"landmark track already exists: {name}")
 
         result = tracker.track(
-            self.path,
+            self.source.path,
             start_seconds=self.start_seconds,
             end_seconds=self.end_seconds,
         )

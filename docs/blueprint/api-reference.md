@@ -27,6 +27,7 @@ from talkingfacekit import (
     LandmarkTracker,
     TalkingFaceSequence,
     VideoMetadata,
+    VideoSource,
     build_mediapipe_face_mesh,
     load_landmark_track,
     render_face_mesh_html,
@@ -42,12 +43,14 @@ namespaces claros.
 
 ```python
 TalkingFaceSequence(
-    path: Path,
-    metadata: VideoMetadata,
+    source: VideoSource,
     start_seconds: float = 0.0,
     end_seconds: float | None = None,
 )
 ```
+
+`source` y los límites del intervalo son estables después de construir la secuencia. El mapping de
+resultados nombrados sigue siendo el estado mutable coordinado por el agregado.
 
 ### `from_video`
 
@@ -56,7 +59,31 @@ TalkingFaceSequence(
 def from_video(cls, video_path: str | Path) -> TalkingFaceSequence: ...
 ```
 
-Inspecciona metadata del primer stream de video. No decodifica frames o audio.
+Inspecciona metadata del primer stream de video, construye un `VideoSource` y deja el final abierto
+hasta EOF. No decodifica frames o audio ni usa la duración reportada como timestamp final.
+
+### `duration_seconds`
+
+```python
+@property
+def duration_seconds(self) -> float | None: ...
+```
+
+Devuelve la duración del intervalo declarado o `None` cuando está abierto. Es distinta de
+`source.metadata.stream_duration_seconds`, que describe el stream completo.
+
+### `clip`
+
+```python
+def clip(
+    self,
+    start_seconds: float,
+    end_seconds: float | None = None,
+) -> TalkingFaceSequence: ...
+```
+
+Crea otra secuencia que comparte el mismo `VideoSource`, está contenida en el intervalo actual y
+comienza sin tracks adjuntos.
 
 ### `landmark_tracks`
 
@@ -87,15 +114,6 @@ Las siguientes firmas muestran el estilo deseado, no una obligación de implemen
 métodos. Una función libre es preferible cuando no necesita coordinar estado del agregado.
 
 ```python
-def clip(
-    self,
-    start_seconds: float,
-    end_seconds: float | None,
-    *,
-    time_origin: Literal["source", "zero"] = "source",
-) -> TalkingFaceSequence: ...
-
-
 def attach_landmark_track(
     self,
     track: FaceLandmarkTrack,
@@ -135,6 +153,15 @@ Agregar un método requiere que la secuencia realmente coordine fuente, interval
 algoritmos puros de transformación deberían seguir siendo funciones.
 
 ## Video — disponible
+
+### `VideoSource`
+
+```python
+VideoSource(path: Path, metadata: VideoMetadata)
+```
+
+Identifica el archivo y la metadata completa de su primer stream sin realizar I/O al construirse.
+Varias secuencias pueden compartir la misma instancia.
 
 ### `inspect_video_metadata`
 
