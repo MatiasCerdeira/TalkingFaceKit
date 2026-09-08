@@ -57,6 +57,7 @@ Usa el video sólo para ancho y alto, convierte landmarks MediaPipe a mesh y esc
 
 ```text
 talkingfacekit
+├── analyze-video
 ├── inspect media|artifact|model
 ├── extract landmarks|audio|speech|features
 ├── track faces|landmarks
@@ -72,7 +73,29 @@ talkingfacekit
 
 No se implementará el árbol de una vez. Cada subcomando llega junto con su API, contrato y tests.
 
-## `inspect media` — objetivo próximo
+## `analyze-video` — objetivo prioritario
+
+```text
+talkingfacekit analyze-video INPUT \
+  --backend deeptalk \
+  --model-dir MODELS \
+  --output REPORT.json \
+  [--overlay OUTPUT.mp4] \
+  [--start-seconds S] \
+  [--end-seconds S] \
+  [--config POLICY.toml] \
+  [--overwrite]
+```
+
+La primera versión muestra speech intervals, face IDs/boxes, `raw_score`, segmentos candidatos,
+rechazados o inciertos, razones y provenance. `camera_facing` y `av_sync` aparecen como
+`not_evaluated` hasta implementar sus backends. El comando no debe presentar scores LR-ASD como
+probabilities ni elegir siempre un rostro.
+
+El JSON es la salida canónica. El overlay es diagnóstico y debe representar exactamente ese mismo
+reporte. Los nombres y flags finales se fijarán junto con la API Python, no antes.
+
+## `inspect media` — objetivo posterior
 
 ```text
 talkingfacekit inspect media INPUT [--json] [--video-stream INDEX] [--audio-stream INDEX]

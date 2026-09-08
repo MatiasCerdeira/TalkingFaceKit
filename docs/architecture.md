@@ -5,9 +5,14 @@ library. Update it in the same change that introduces or modifies an architectur
 
 ## Goal
 
-TalkingFaceKit provides a reusable representation and processing pipeline for talking-face video
-sequences. A sequence may combine video frames, audio samples, facial-animation parameters,
-timestamps, and metadata without being tied to one dataset, tracker, or speech model.
+TalkingFaceKit analyzes arbitrary video sources and produces explainable source-timestamp intervals
+that are useful for talking-face datasets. The central question is which visible face, if any, is
+producing audible speech. Camera orientation, visual quality, and audiovisual synchronization are
+separate observations that later policy can use to accept, reject, or mark an interval uncertain.
+
+The library owns media timelines, backend-independent results, temporal aggregation, policy, and
+reports. It does not own the pretrained perception models. Existing landmark, mesh, and rendering
+features remain supported as optional visual capabilities rather than the primary product workflow.
 
 ## Design principles
 
@@ -17,6 +22,51 @@ timestamps, and metadata without being tied to one dataset, tracker, or speech m
 4. Support replaceable backends through small interfaces only when multiple implementations are
    needed.
 5. Build and validate one small end-to-end workflow before generalizing the architecture.
+6. Preserve raw model observations and uncertainty; do not present an uncalibrated score as a
+   probability or silently collapse ambiguous/off-screen speech into a boolean.
+
+## Current delivery direction
+
+The first client-visible workflow analyzes one video before any collection or batch abstraction is
+built:
+
+```text
+VideoSource + source interval
+        |
+        +--> PyAV video frames with source PTS
+        +--> PyAV audio chunks with source timestamps       [implemented]
+                         |
+                         v
+             experimental DeepTalk-ASD adapter
+       face tracks + speech intervals + raw ASD scores
+                         |
+                         v
+              TalkingFaceKit segment policy
+       candidate / rejected / uncertain + reasons
+                         |
+                         v
+              JSON report + diagnostic overlay
+```
+
+DeepTalk-ASD 0.3.1 is the selected **experimental** first backend because the compatibility spike
+proved that its InspireFace tracking, Silero VAD, and LR-ASD ONNX path work locally on the project's
+Python 3.11 Apple Silicon environment. It remains behind a narrow integration boundary. Its objects,
+synthetic time assumptions, buffering behavior, and score interpretation must not leak into core
+contracts. The initial thesis slice disables speaker embeddings on macOS and records that capability
+as unavailable rather than silently pretending it ran.
+
+The experimental choice is not a permanent commitment. Evaluation on representative labeled clips
+provides an explicit gate:
+
+1. keep the DeepTalk adapter if the model behavior is useful and the wrapper is manageable;
+2. adapt the same LR-ASD ONNX models more directly if the model is useful but the wrapper is the
+   problem;
+3. compare TalkNet only if LR-ASD quality is inadequate.
+
+MediaPipe is not the active-speaker engine. It is the planned later source of head orientation and
+visual-suitability observations. Exact A/V offset is also not inferred from ASD scores; a separate
+SyncNet evaluation follows the active-speaker milestone. Folder discovery, collection results, and
+batch execution come after the one-video result model has been validated.
 
 ## Dependency direction
 
@@ -74,6 +124,7 @@ Create these modules only when real code needs them:
 
 ```text
 src/talkingfacekit/
+├── audio.py          Backend-independent decoded-audio chunk contract
 ├── metadata.py       Backend-independent metadata value types
 ├── mesh.py           Backend-independent animated triangular-mesh contract
 ├── video.py          Backend-independent source and streamed-frame contracts
@@ -81,6 +132,7 @@ src/talkingfacekit/
 │   └── plotly.py      Optional offline interactive HTML renderer
 ├── sequence.py       User-facing sequence aggregate
 ├── io/
+│   ├── audio.py      PyAV-based audio streaming boundary
 │   ├── landmarks.py  Versioned NPZ landmark persistence boundary
 │   └── video.py      PyAV-based video inspection and RGB streaming boundary
 └── tracking/
@@ -123,6 +175,22 @@ not retain previous arrays. Source FPS is metadata only and is never used to syn
 Callers decide whether to retain yielded pixels and therefore own any resulting memory growth.
 Computer-vision backends should consume this boundary instead of duplicating PyAV access, interval
 filtering, color conversion, or timestamp validation.
+
+`DecodedAudioChunk` establishes the shared audio-streaming contract:
+
+- `start_sample_index`: non-negative index of the first sample in complete-stream decode order;
+- `start_timestamp_seconds`: finite source timestamp of the first retained sample;
+- `sample_rate_hz`: positive decoded sample rate, preserved without resampling;
+- `channel_layout`: non-empty FFmpeg layout name, preserved without remixing;
+- `samples`: C-contiguous shape `(sample_count, channel_count)` with dtype `float32`.
+
+`stream_audio_chunks` owns PyAV audio access, selects the first audio stream, and processes the same
+half-open `[start_seconds, end_seconds)` semantics as video. A decoded frame that crosses a boundary
+is trimmed at sample precision. Integer PCM is explicitly normalized by its full-scale range;
+floating-point PCM preserves decoded amplitudes and is not clipped. The integration does not
+resample or remix. It yields one chunk at a time, rejects missing/invalid timestamps and audio
+metadata, requires strictly increasing yielded chunk timestamps, and fails clearly when a source
+has no audio or an interval contains no samples.
 
 `FaceLandmarkTrack` currently establishes the landmark timeline contract:
 
@@ -169,9 +237,9 @@ timestamps, the complete landmark tensor, and its detection mask. Loading recons
 `FaceLandmarkTrack`, so all current data-contract validation is applied again. Saving completes a
 temporary archive before replacing the destination, and replacement must be requested explicitly.
 
-Materialized multi-frame video arrays, audio layout, facial-parameter schemas, and cross-modal
-timestamp semantics remain open decisions. They must be documented here before becoming public
-contracts.
+Materialized multi-frame video arrays, materialized audio tracks, audio transformation provenance,
+facial-parameter schemas, and cross-modal analysis-result semantics remain open decisions. They
+must be documented here before becoming public contracts.
 
 ## Error handling
 
@@ -205,17 +273,27 @@ contracts.
 | Optional MediaPipe landmark backend        | Provides the first local, cross-platform tracking slice without making it a core dependency.           |
 | Named transactional landmark results       | Supports comparisons and prevents failed work from leaving partial sequence state.                     |
 | Shared RGB frame stream                    | Backends reuse source indices, timestamps, intervals, and RGB conversion without materializing video.   |
+| Shared timestamped audio chunk stream      | Backends receive bounded sample-major float32 chunks without implicit resampling or channel remixing.    |
 | Versioned NPZ landmark archives            | Makes expensive tracking results reusable while preserving NumPy dtypes and timeline alignment.        |
 | Backend-independent animated mesh contract | Makes triangle geometry reusable by renderers, exporters, and future model-fitting backends.           |
 | MediaPipe 468-vertex surface conversion    | Reuses the official 852-triangle topology while keeping relative-depth limitations explicit.           |
 | Plotly as optional HTML renderer           | Provides a portable interactive demonstration without coupling core mesh data to a graphics framework. |
+| Single-video analysis before collection    | Validates the result model and client value before generalizing folder and batch orchestration.         |
+| DeepTalk-ASD as experimental ASD backend   | Reuses a working face/VAD/LR-ASD pipeline while keeping its limitations outside the core.               |
+| TalkingFaceKit-owned segment policy        | Raw backend scores are evidence, not calibrated probabilities or final segment decisions.              |
+| Separate visual-quality and sync stages    | MediaPipe pose and SyncNet offset answer different questions from active-speaker attribution.           |
 
 ## Pending decisions
 
 - Whether a materialized multi-frame video array should become a public contract.
 - Alternative pixel formats or decoding backends beyond the canonical RGB `uint8` frame stream.
-- Canonical audio layout, dtype, amplitude range, and channel convention.
+- Contracts for materialized audio, resampling, downmixing, normalization, and their provenance.
 - Cross-modal timestamp and synchronization representation beyond landmark source timestamps.
+- Exact core schemas for face tracks, speech intervals, raw ASD observations, segment decisions,
+  issues, and analysis provenance; publish only those required by the one-video slice.
+- Whether DeepTalk should run in a separate Python environment/process or as an optional in-process
+  dependency after compatibility and native-crash risks are evaluated during implementation.
+- Thresholds, smoothing, score margins, and minimum-duration rules, which require labeled examples.
 - Facial-animation parameter schema and FLAME conventions.
 - Serialization formats and versioning policy for data other than landmark tracks.
-- Optional dependency groups for future audio, FLAME, and speech backends.
+- Optional dependency groups for future analysis, FLAME, and speech backends.

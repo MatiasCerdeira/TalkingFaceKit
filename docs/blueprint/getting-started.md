@@ -26,7 +26,6 @@ La instalación futura debería mantener extras pequeños y orientados a capacid
 ```bash
 uv add "talkingfacekit[tracking-mediapipe]"  # Disponible en pyproject, pensado para distribución.
 uv add "talkingfacekit[rendering]"           # Disponible en pyproject, pensado para distribución.
-uv add "talkingfacekit[audio]"               # Objetivo.
 uv add "talkingfacekit[speech]"              # Objetivo.
 uv add "talkingfacekit[flame]"               # Investigación.
 uv add "talkingfacekit[all]"                 # Objetivo; sólo cuando la matriz sea mantenible.
@@ -35,7 +34,37 @@ uv add "talkingfacekit[all]"                 # Objetivo; sólo cuando la matriz 
 Dentro de este repositorio se usa `uv sync --extra <nombre>`. TalkingFaceKit nunca debería instalar
 o descargar modelos en el momento del import.
 
-## Cinco minutos: video a landmarks y mesh
+## Cinco minutos: video a segmentos candidatos — objetivo prioritario
+
+La experiencia principal futura será analizar primero un video:
+
+```python
+from pathlib import Path
+
+from talkingfacekit.analysis import analyze_video
+from talkingfacekit.integrations.deeptalk import DeepTalkAnalyzer
+
+report = analyze_video(
+    "interview.mp4",
+    analyzer=DeepTalkAnalyzer(model_dir=Path("models/deeptalk")),
+)
+
+for segment in report.segments:
+    print(segment.start_seconds, segment.end_seconds, segment.status, segment.reasons)
+
+report.save_json("outputs/interview-analysis.json")
+report.render_overlay("outputs/interview-analysis.mp4")
+```
+
+Esta API es ilustrativa y todavía no funciona. El audio PyAV con timestamps ya está disponible; el
+orden restante es adapter DeepTalk experimental, reporte/overlay de un video y evaluación de seis
+casos. El primer reporte marca pose y sync como `not_evaluated`; no promete segmentos completamente
+válidos antes de medirlos.
+
+La instalación del backend y la forma de obtener sus modelos se definirán con su adapter. No se
+agregará una dependencia ni se descargarán assets implícitamente.
+
+## Cinco minutos: video a landmarks y mesh — capacidad visual existente
 
 ### Flujo actual — disponible
 
@@ -136,29 +165,23 @@ for frame in stream_video_frames(
 El intervalo es semiabierto: `[2.0, 3.0)`. Cada `rgb` tiene shape `(height, width, 3)`, dtype
 `uint8`, canales RGB y rango `[0, 255]`.
 
-## Audio y habla — objetivo
+## Audio disponible; habla como próximo objetivo
 
-El diseño esperado mantiene audio y video sobre timestamps de origen:
+El flujo disponible mantiene audio y video sobre timestamps de origen:
 
 ```python
-from talkingfacekit.audio import stream_audio_chunks
-from talkingfacekit.speech import VoiceActivityDetector, align_phonemes
+from talkingfacekit import stream_audio_chunks
 
 chunks = stream_audio_chunks(
     "interview.webm",
-    sample_rate_hz=16_000,
-    channel_layout="mono",
 )
-voice = VoiceActivityDetector().detect(chunks)
-phonemes = align_phonemes(
-    audio=chunks,
-    transcript="Welcome to TalkingFaceKit",
-    language="en",
-)
+for chunk in chunks:
+    consume(chunk.samples, chunk.start_timestamp_seconds)
 ```
 
-El resample y el downmix son parámetros explícitos. El resultado registra sample rate original,
-sample rate de salida, backend, versión, configuración y tiempos de cada segmento.
+El stream conserva sample rate y canales decodificados. El adapter DeepTalk convertirá después a
+mono 16 kHz de manera explícita dentro de su boundary. ASR, forced alignment, fonemas y visemas dejan
+de ser prioridad inmediata.
 
 ## Multi-rostro — objetivo
 
@@ -182,6 +205,8 @@ registrar cortes, reapariciones y ambigüedades; no puede reasignar una identida
 
 ## Próximos pasos
 
+- Seguir el orden obligatorio del [roadmap](roadmap.md): DeepTalk, reporte y evaluación; audio ya
+  está completo.
 - Leer [conceptos fundamentales](concepts.md) antes de diseñar un nuevo track.
 - Consultar [contratos de datos](data-contracts.md) antes de exponer arrays.
 - Elegir una entrega del [roadmap](roadmap.md) antes de crear módulos nuevos.

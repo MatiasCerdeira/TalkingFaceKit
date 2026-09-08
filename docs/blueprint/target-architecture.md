@@ -14,6 +14,7 @@ se materializa por entregas; no se crean carpetas o interfaces vacías para pare
 6. Hacer reproducibles los resultados mediante schemas y provenance.
 7. Separar análisis, transformación, persistencia, rendering y exportación.
 8. Escalar de un archivo a batch sin cambiar los contratos core.
+9. Separar observaciones de modelos, política temporal y decisión final de segmentos.
 
 ## Capas y dirección de dependencias
 
@@ -89,6 +90,35 @@ src/talkingfacekit/
 Esta disposición ya respeta el principio de depender hacia adentro. Los futuros nombres no
 justifican mover los módulos existentes sin un beneficio concreto.
 
+## Slice arquitectónico prioritario
+
+La arquitectura próxima no es el mapa objetivo completo. Es este flujo mínimo:
+
+```text
+io.video/PyAV                         experimental DeepTalk integration
+  video frames + audio chunks ------> face IDs + boxes + VAD + raw ASD scores
+       source timestamps                         |
+                                                 v
+                                      core analysis observations
+                                                 |
+                                                 v
+                                       application segment policy
+                                                 |
+                                                 v
+                                        JSON report + overlay
+```
+
+Responsabilidades:
+
+- PyAV preserva y entrega los timelines fuente.
+- DeepTalk adapta formatos de modelo, pero no decide qué segmento es válido.
+- Los contratos core expresan observación, ausencia, ambigüedad y `not_evaluated`.
+- La capa application agrega ventanas y aplica thresholds/márgenes configurables.
+- Rendering y persistencia consumen el mismo resultado; no vuelven a inferir.
+
+El primer slice no necesita un `Pipeline`, un registry de plugins, un contenedor multipista ni una
+colección. Los módulos se crean sólo cuando su entrega contiene código y tests reales.
+
 ## Mapa de módulos objetivo
 
 Cada entrada marcada como objetivo aparece cuando una entrega real la necesita:
@@ -97,7 +127,8 @@ Cada entrada marcada como objetivo aparece cuando una entrega real la necesita:
 src/talkingfacekit/
 ├── metadata.py              # Disponible: metadata de video
 ├── video.py                 # Disponible: fuente inmutable y frame RGB core
-├── audio.py                 # Objetivo: chunks/tracks de audio core
+├── audio.py                 # Disponible: chunks de audio core
+├── analysis.py              # Objetivo inmediato: observaciones, policy y reporte de un video
 ├── timeline.py              # Objetivo condicionado: tiempo compartido y alineación
 ├── mesh.py                  # Disponible: mesh animado core
 ├── sequence.py              # Disponible: agregado y operaciones coordinadas
@@ -107,7 +138,7 @@ src/talkingfacekit/
 ├── cli.py                   # Disponible; puede dividirse sólo cuando crezca
 ├── io/
 │   ├── video.py             # Disponible: PyAV metadata/frames
-│   ├── audio.py             # Objetivo: PyAV audio/encode
+│   ├── audio.py             # Disponible: PyAV audio streaming; encode después
 │   ├── landmarks.py         # Disponible: NPZ v1
 │   └── project.py           # Objetivo: proyecto multipista
 ├── tracking/
@@ -120,17 +151,20 @@ src/talkingfacekit/
 │   ├── landmarks.py         # Objetivo: smoothing/interpolación/calidad
 │   └── synchronization.py   # Objetivo: offset y alineación
 ├── speech/
-│   ├── tracks.py            # Objetivo: voz/texto/fonemas/visemas
-│   └── <backend>.py         # Sólo al implementar un backend concreto
+│   └── tracks.py            # Objetivo posterior: texto/fonemas/visemas
+├── integrations/
+│   ├── deeptalk.py          # Objetivo inmediato: adapter experimental
+│   └── syncnet.py           # Objetivo posterior: adapter de sincronización
 ├── models/
 │   └── flame.py             # Investigación: adapter opcional
 ├── rendering/
 │   ├── plotly.py            # Disponible
 │   ├── overlay.py           # Objetivo: video de diagnóstico
-│   └── report.py            # Objetivo: reporte HTML
+│   └── report.py            # Objetivo inmediato: overlay/reporte diagnóstico
 ├── export/
 │   └── gltf.py              # Objetivo: mesh/animación portable
-├── dataset.py               # Objetivo tardío: manifest iterable
+├── collection.py            # Objetivo posterior: folder/batch tras probar un video
+├── dataset.py               # Objetivo posterior: manifest iterable si hace falta
 └── pipeline.py              # Objetivo tardío: composición validada
 ```
 
@@ -149,6 +183,7 @@ TalkingFaceSequence
 ├── face_tracks: name -> FaceTrackSet
 ├── audio_tracks: name -> AudioTrack
 ├── speech_tracks: name -> Transcript/Phoneme/Viseme track
+├── analysis_reports: name -> VideoAnalysisReport
 ├── geometry_tracks: name -> FaceMesh/FLAME track
 └── provenance graph
 ```
@@ -157,6 +192,11 @@ TalkingFaceSequence
 secuencias. No contiene intervalos ni resultados. No todos los mappings deben agregarse como
 atributos públicos inmediatamente. Un registro unificado de artefactos podría ser mejor después de
 probar persistencia multipista. Hasta entonces, mappings tipados por familia mantienen la API clara.
+
+El primer `VideoAnalysisReport` puede devolverse como valor sin adjuntarse inmediatamente a la
+secuencia. Esa elección se toma al implementar el flujo, según si existe un segundo consumidor real
+del mapping. Una colección futura agrega reportes ya validados; no redefine qué significa un
+segmento.
 
 ## Operaciones puras y operaciones con efectos
 

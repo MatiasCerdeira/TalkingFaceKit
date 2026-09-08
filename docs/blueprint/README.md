@@ -5,10 +5,12 @@
 > la versión `0.1.0` está documentada en el [`README.md`](../../README.md) y sus decisiones vigentes
 > en [`docs/architecture.md`](../architecture.md).
 
-TalkingFaceKit aspira a ser una biblioteca modular de Python para representar, procesar, analizar,
-animar y exportar secuencias de personas hablando. Su unidad central es una secuencia temporal que
-puede reunir video, audio, identidades faciales, landmarks, geometría, pose, parámetros de
-animación y señales de habla sin quedar atada a un dataset, tracker, modelo neuronal o renderer.
+TalkingFaceKit aspira a ser una biblioteca modular de Python para validar datasets de video y
+encontrar intervalos donde un rostro visible produce el habla audible. Su unidad de análisis inicial
+es un video o intervalo sobre la línea temporal fuente. Puede reunir audio, tracks faciales,
+evidencia de hablante activo, pose, sincronización, decisiones y razones sin quedar atada a un
+dataset, tracker o modelo neuronal. Landmarks, geometría y animación se conservan como capacidades
+opcionales posteriores al filtrado.
 
 La documentación imaginada aquí cumple dos funciones:
 
@@ -50,16 +52,19 @@ La biblioteca debería permitir que un usuario:
 - seleccione un intervalo temporal sin inventar timestamps;
 - procese video y audio por streaming con memoria acotada;
 - obtenga uno o varios rostros con identidad temporal estable;
-- calcule landmarks 2D/3D, pose, mirada, máscaras, blendshapes o parámetros FLAME;
-- extraiga voz, actividad vocal, transcripción, fonemas, visemas y prosodia;
-- alinee señales de distintas frecuencias sobre una línea temporal explícita;
+- detecte habla y atribuya el audio al rostro visible que probablemente lo produce;
+- distinga habla fuera de cámara, múltiples rostros ambiguos y casos no medibles;
+- evalúe orientación a cámara, calidad facial y sincronización como señales separadas;
+- obtenga intervalos aceptados, rechazados o inciertos con razones y evidencia original;
+- genere un reporte machine-readable y un overlay que permita inspeccionar errores;
+- generalice el análisis probado a carpetas y datasets de manera resumible;
+- opcionalmente calcule landmarks, pose, mirada, meshes o parámetros de animación;
 - suavice, interpole o edite resultados conservando una máscara de validez y provenance;
-- conduzca un avatar o retargetee animación facial sin acoplar el core al motor de destino;
-- renderice overlays, meshes y comparaciones;
-- exporte resultados interoperables y archivos nativos versionados;
-- procese datasets de manera reproducible, reiniciable y observable;
-- mida cobertura, jitter, sincronía labial y errores de fitting;
+- exporte manifests o clips normalizados con transformaciones explícitas;
 - elija de forma explícita backend, dispositivo, modelo y política de precisión.
+
+La primera experiencia objetivo es `video -> reporte de hablante visible`, no un pipeline genérico
+ni un contenedor de colecciones. El [roadmap](roadmap.md) define el orden exacto.
 
 ## Qué no debería prometer
 
@@ -79,14 +84,16 @@ Incluso en una versión madura, TalkingFaceKit no debería:
 
 | Área | Disponible | Objetivo | Investigación |
 | --- | --- | --- | --- |
-| Media | metadata y frames RGB por streaming | rotación, pixel aspect ratio, audio, clips | cámara o streams en vivo |
-| Rostro | MediaPipe, un rostro, 478 landmarks | multi-rostro, identidades, pose, gaze, máscaras | oclusión y confianza por punto |
+| Media | metadata, clips, frames RGB y audio `float32` por streaming con PTS | metadata ampliada y transformaciones de audio | cámara o streams en vivo |
+| Rostro | MediaPipe, un rostro, 478 landmarks | DeepTalk multi-rostro/IDs; pose y quality MediaPipe | gaze dedicado |
+| Hablante activo | spike DeepTalk completado, sin API | adapter, raw scores, segmentos y reporte de un video | TalkNet sólo si LR-ASD falla |
+| Sincronización | no disponible | SyncNet después de ASD | drift por tramos |
 | Geometría | mesh MediaPipe 468/852 | normales, smoothing, exportación glTF | fitting FLAME y textura |
-| Habla | presencia de stream de audio | waveform, VAD, ASR, fonemas, visemas, prosodia | diarización audiovisual |
+| Habla | presencia y decode de audio | Silero VAD vía adapter | ASR, fonemas, diarización |
 | Animación | renderer Plotly de mesh | blendshapes, curves, retargeting | audio a expresión y edición semántica |
 | Persistencia | landmarks NPZ v1 | proyecto nativo versionado y otros tracks | almacenamiento por chunks a gran escala |
-| Operación | tres comandos CLI | pipeline, batch, cache, reportes | ejecución distribuida |
-| Evaluación | validación de contratos | cobertura, jitter, fitting y lip-sync | benchmarks comparables entre modelos |
+| Operación | tres comandos CLI | `analyze-video`, luego folder/batch/cache | ejecución distribuida |
+| Evaluación | contratos y spike de compatibilidad | seis casos ASD + offsets sintéticos | benchmark de dominio mayor |
 
 La amplitud del mapa no autoriza a crear módulos vacíos. El orden y la definición de terminado se
 encuentran en el [roadmap](roadmap.md).

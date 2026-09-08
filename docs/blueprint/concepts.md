@@ -18,6 +18,11 @@ inmutables en la práctica. Una operación costosa:
 
 Este patrón evita estados parciales y ya se usa en `track_landmarks`.
 
+La secuencia no significa que el video ya sea un talking head válido. Es una fuente o vista temporal
+que puede ser analizada. El resultado nuevo será un `VideoAnalysisReport` (nombre propuesto) con
+observaciones y decisiones. Una futura colección agrupa fuentes y reportes; no debería contener sólo
+secuencias previamente aceptadas.
+
 ## Fuente, intervalo y timeline
 
 **Disponible parcialmente.** Una fuente local se identifica con `VideoSource`; el primer stream de
@@ -43,9 +48,9 @@ existan.
 
 ## Streaming y materialización
 
-**Disponible para video; objetivo para audio y resultados grandes.** La unidad de procesamiento de
-video es `DecodedVideoFrame`, entregada una por vez. Esto limita la memoria del productor, aunque
-un consumidor puede retener los arrays.
+**Disponible para video y audio; objetivo para otros resultados grandes.** Las unidades de
+procesamiento son `DecodedVideoFrame` y `DecodedAudioChunk`, entregadas una por vez. Esto limita la
+memoria del productor, aunque un consumidor puede retener los arrays.
 
 Materializar un track tiene sentido cuando su tamaño es moderado y se reutiliza, como landmarks.
 Para máscaras densas, frames, texturas o datasets grandes, el diseño futuro debería ofrecer chunks
@@ -66,8 +71,11 @@ escalares, categorías o intervalos. Los tracks comparten invariantes:
 
 **Disponible:** `FaceLandmarkTrack` y `FaceMeshTrack`.
 
-**Objetivo:** tracks de bounding boxes, pose, gaze, máscaras, blendshapes, audio, voz, fonemas,
-visemas, prosodia, cámara y parámetros de modelo 3D.
+**Objetivo inmediato:** face tracks, speech intervals, observaciones de hablante activo y decisiones
+de segmentos. `DecodedAudioChunk` ya está disponible como primitiva de streaming.
+
+**Objetivo posterior:** pose, gaze, máscaras, blendshapes, fonemas, visemas, prosodia, cámara y
+parámetros de modelo 3D.
 
 No hace falta que todos hereden de una superclase. Una abstracción común sólo debería aparecer
 cuando operaciones reales —por ejemplo recorte, resample o persistencia— demuestren que comparten
@@ -147,6 +155,24 @@ política adecuada al tipo de señal:
 - nunca interpolación automática de topologías o identidades diferentes.
 
 El offset aplicado, el drift corregido y la calidad estimada deben quedar registrados.
+
+Active speaker detection y sincronización no son sinónimos. LR-ASD responde qué rostro parece
+producir el audio en una ventana; SyncNet se evaluará aparte para estimar desplazamiento temporal y
+decidir si la relación A/V es aceptable o no medible.
+
+## Observación, política y decisión
+
+Un backend produce observaciones: boxes, VAD y scores crudos. TalkingFaceKit aplica una política
+temporal configurable y produce decisiones con razones. Separarlas permite:
+
+- cambiar DeepTalk por LR-ASD directo o TalkNet sin cambiar el significado del reporte;
+- recalibrar thresholds sin repetir necesariamente toda la inferencia;
+- conservar ambigüedad, ausencia y capacidades `not_evaluated`;
+- explicar qué evidencia causó cada segmento.
+
+Un `raw_score` no es confidence salvo que el backend documente y valide esa calibración. Durante el
+primer milestone, un intervalo puede ser candidato, rechazado o incierto; no se marca aceptado por
+completo hasta medir los criterios de pose, calidad y sync requeridos.
 
 ## Provenance y reproducibilidad
 

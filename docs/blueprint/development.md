@@ -14,6 +14,11 @@ cómo usar la documentación futura para elegir y cerrar una implementación.
 
 No crear branches, commits, pushes ni cambios remotos salvo pedido explícito.
 
+La prioridad vigente no se elige libremente del blueprint: audio PyAV con timestamps ya está
+completo; sigue el adapter experimental DeepTalk-ASD, luego el reporte/overlay de un video y
+finalmente la evaluación de seis casos. MediaPipe pose, SyncNet y folder/batch esperan ese gate. Ver el
+[`roadmap`](roadmap.md).
+
 ## De blueprint a feature
 
 ### 1. Elegir una historia vertical

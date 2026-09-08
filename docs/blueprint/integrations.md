@@ -23,8 +23,12 @@ Un adapter es responsable de:
 | inspección/decode de video | disponible | PyAV | core |
 | landmarks 478 | disponible | MediaPipe | `tracking-mediapipe` |
 | mesh HTML | disponible | Plotly | `rendering` |
-| audio decode/resample | objetivo | primero PyAV; adapter especializado si hace falta | core o `audio` por decidir |
-| VAD | objetivo | backend local liviano a evaluar | `speech` |
+| audio decode | disponible | PyAV, float32 explícito sin resample/remix | core |
+| hablante activo | objetivo inmediato; spike completo | DeepTalk-ASD 0.3.1, experimental | por decidir después de aprobación |
+| VAD | incluido en primer adapter | Silero VAD vía DeepTalk | junto con ASD experimental |
+| head pose/calidad | objetivo posterior a ASD | MediaPipe | `tracking-mediapipe` |
+| sincronización A/V | objetivo posterior a pose | SyncNet a evaluar | `sync` por decidir |
+| fallback ASD | condicional | LR-ASD ONNX directo; después TalkNet | sólo si el gate lo activa |
 | ASR/aligner | objetivo | uno o más backends opcionales | `speech-*` |
 | FLAME fitting | investigación | PyTorch + implementación FLAME | `flame` |
 | overlay de video | objetivo | PyAV primero; FFmpeg CLI sólo si aporta valor | `rendering-video` |
@@ -46,8 +50,9 @@ PyAV vive bajo `talkingfacekit.io`. Es dueño de:
 - conservar índices y timestamps;
 - traducir errores FFmpeg a mensajes de boundary.
 
-Trackers no deben abrir contenedores por separado. Audio debería extender esta misma frontera o un
-módulo hermano para compartir selección de fuente y semántica temporal.
+Trackers no deben abrir contenedores por separado. `io.audio` usa la misma semántica de intervalo y
+timeline fuente: selecciona el primer stream de audio, recorta por sample y entrega buffers
+sample-major `float32` sin resample ni remix.
 
 ## MediaPipe — disponible
 
@@ -61,9 +66,52 @@ el `.task`. El adapter:
 - no conserva pixels;
 - cierra el landmarker mediante context manager.
 
-La topología para el mesh también se obtiene de MediaPipe. Si en el futuro se desea construir mesh
+La topología para el mesh también se obtiene de MediaPipe. En la nueva dirección, MediaPipe se
+reutilizará más adelante para head pose, tamaño/cobertura y suitability visual. Esas señales ayudan
+a decidir si un hablante activo mira suficientemente hacia cámara, pero no prueban quién produce el
+audio.
+
+Si en el futuro se desea construir mesh
 sin instalar MediaPipe, la conectividad versionada debería convertirse en un asset pequeño propio,
 con revisión de licencia y tests de equivalencia.
+
+## DeepTalk-ASD — backend experimental elegido
+
+El [spike de compatibilidad](../research/deeptalk_asd_compatibility.md) validó DeepTalk-ASD 0.3.1
+como la vía más rápida al primer reporte de hablante activo. Reúne InspireFace, Silero VAD y LR-ASD
+ONNX y funcionó localmente en Apple Silicon con Python 3.11.
+
+La integración debe ser estrecha:
+
+- recibe frames y chunks de audio con timestamps de TalkingFaceKit;
+- realiza 25 FPS, crops y mono 16 kHz dentro del boundary;
+- devuelve tipos core para IDs locales, boxes, intervalos y `raw_score`;
+- no expone objetos DeepTalk, OpenCV, ONNX Runtime o InspireFace;
+- no interpreta scores como probabilities;
+- limita buffers y controla EOF/determinismo;
+- valida paths y hashes antes de entrar al runtime nativo;
+- declara speaker embeddings `unavailable` en el primer flujo macOS;
+- puede usar un worker aislado si el conflicto NumPy o el riesgo de `SIGABRT` lo requiere.
+
+DeepTalk no se agrega como dependencia sin el acuerdo que exige `AGENTS.md`. La decisión de extra
+opcional versus worker aislado pertenece a la entrega del adapter, no al core.
+
+El proyecto es una tesis no comercial, por lo que los pesos InspireFace actuales no bloquean este
+experimento. Sus términos y hashes se conservan de todas formas. Cualquier uso comercial futuro
+abre una nueva revisión.
+
+## LR-ASD, TalkNet y SyncNet — rutas condicionadas
+
+- **LR-ASD ONNX directo:** siguiente opción sólo si los resultados del modelo son útiles pero el
+  wrapper DeepTalk causa los problemas.
+- **TalkNet:** comparación sólo si LR-ASD no funciona bien en los seis casos etiquetados. No se
+  mantiene un segundo stack en paralelo sin evidencia.
+- **SyncNet:** capacidad distinta. Se evalúa después del milestone ASD para estimar offset y estado
+  de sincronización con clips artificialmente desplazados.
+
+Ninguno de estos backends debe cambiar la semántica pública del reporte. Reemplazar un backend debe
+preservar timestamps fuente, tipos de observación y provenance, aunque los scores crudos tengan
+rangos distintos.
 
 ## Plotly — disponible
 
@@ -101,9 +149,10 @@ Reglas:
 - liberar recursos según el ciclo de vida del adapter;
 - no asumir CUDA en tests unitarios.
 
-## Backends de habla — objetivo
+## Otros backends de habla — objetivo posterior
 
-La primera entrega debería evaluar un caso pequeño y local. Criterios:
+ASR, forced alignment y diarización no forman parte del primer reporte ASD. Si un caso futuro los
+requiere, sus criterios son:
 
 - Python 3.11 y plataformas del equipo;
 - tamaño de la dependencia y del modelo;

@@ -152,6 +152,35 @@ def transcribe(
 Agregar un método requiere que la secuencia realmente coordine fuente, intervalo y ownership. Los
 algoritmos puros de transformación deberían seguir siendo funciones.
 
+## Análisis de un video — objetivo prioritario
+
+La primera API nueva de alto nivel debe ejecutar un caso concreto, no un pipeline genérico:
+
+```python
+def analyze_video(
+    video_path: str | Path,
+    *,
+    analyzer: VideoAnalyzer,
+    start_seconds: float = 0.0,
+    end_seconds: float | None = None,
+    policy: SegmentPolicy | None = None,
+) -> VideoAnalysisReport: ...
+```
+
+`VideoAnalyzer`, `SegmentPolicy` y el nombre de la función son propuestas, no contratos. El
+comportamiento requerido sí está definido:
+
+- DeepTalk-ASD es el primer adapter experimental;
+- video y audio preservan el timeline fuente;
+- el adapter entrega face tracks, speech intervals y observaciones `raw_score`;
+- la policy de TalkingFaceKit produce segmentos candidatos/rechazados/inciertos con razones;
+- pose y sync quedan `not_evaluated` en el primer milestone;
+- el resultado contiene provenance y puede persistirse a JSON o renderizarse sin repetir inferencia.
+
+No se necesita un protocolo público para el primer adapter si no hay todavía una segunda
+implementación real. El boundary puede ser concreto y convertirse en protocolo cuando el gate active
+LR-ASD directo o TalkNet.
+
 ## Video — disponible
 
 ### `VideoSource`
@@ -205,21 +234,29 @@ def stream_video_frames(
 Modificar la firma existente requiere preservar sus defaults y semántica. Selección múltiple de
 streams y rotación llegan con metadata ampliada y tests de compatibilidad.
 
-## Audio — objetivo
+## Audio — parcialmente disponible
 
 Namespace: `talkingfacekit.audio` para contratos y transformaciones puras;
 `talkingfacekit.io.audio` para decode/encode.
+
+### `DecodedAudioChunk` y `stream_audio_chunks` — disponibles
 
 ```python
 def stream_audio_chunks(
     media_path: str | Path,
     *,
-    audio_stream: int | None = None,
     start_seconds: float = 0.0,
     end_seconds: float | None = None,
 ) -> Iterator[DecodedAudioChunk]: ...
+```
 
+Selecciona el primer stream de audio. Entrega chunks C-contiguous `float32[S, C]` con sample rate,
+layout, índice de sample y PTS fuente. Recorta límites a precisión de sample y no realiza resample,
+remix ni clipping.
 
+### Materialización y transformaciones — objetivos
+
+```python
 def decode_audio(
     media_path: str | Path,
     *,
@@ -242,8 +279,9 @@ def compute_audio_features(
 ) -> AudioFeatureTrack: ...
 ```
 
-Las primeras entregas deberían implementar streaming, materialización acotada y round-trip antes
-de VAD o ASR.
+El streaming ya está implementado. Materialización, round-trip y transformaciones sólo se agregan si
+un flujo real las necesita; el adapter DeepTalk puede convertir sus inputs dentro de su boundary sin
+publicar todavía un `AudioTrack` general.
 
 ## Landmark tracking — disponible
 
@@ -551,7 +589,7 @@ def render_quality_report(
 ) -> Path: ...
 ```
 
-## Pipeline y datasets — objetivos tardíos
+## Collection, pipeline y datasets — objetivos posteriores
 
 ```python
 pipeline = Pipeline(steps=[...])
@@ -564,6 +602,10 @@ batch_result = pipeline.run_batch(dataset, workers=4, on_error="continue")
 Estas APIs llegan después de operaciones concretas y persistencia multipista. El pipeline no debe
 ser un plugin system genérico ni aceptar objetos sin tipar. Cada step declara inputs, outputs,
 configuración normalizada y side effects.
+
+La primera extensión desde carpeta no necesita esperar un DAG ni adoptar este `Pipeline`: puede
+descubrir fuentes determinísticamente y ejecutar el analizador de un video en secuencia. Lo que sí
+debe esperar es un `VideoAnalysisReport` validado y estable.
 
 ## Excepciones — dirección propuesta
 

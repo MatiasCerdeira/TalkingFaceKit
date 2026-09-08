@@ -1,6 +1,45 @@
 # TalkingFaceKit
 
-TalkingFaceKit es una biblioteca modular en Python para procesar videos de personas hablando. El objetivo es representar y procesar de forma reutilizable video, audio, tracking facial y metadata.
+TalkingFaceKit es una biblioteca modular en Python para analizar videos y localizar intervalos útiles
+para datasets de personas hablando.
+
+## Dirección actual del proyecto
+
+El objetivo principal ya no es asumir que cada entrada es un video de tipo *talking head*. La
+biblioteca debe poder recibir videos arbitrarios y responder, sobre la línea temporal original:
+
+- cuándo hay habla audible;
+- qué rostros aparecen y cómo se mantienen sus identidades locales;
+- qué rostro visible, si alguno, parece producir esa voz;
+- qué intervalos cumplen criterios posteriores de orientación a cámara, calidad y sincronización;
+- por qué un intervalo fue aceptado, rechazado o marcado como incierto.
+
+El primer milestone será un analizador de **un solo video** que genere resultados estructurados y
+un video de diagnóstico. DeepTalk-ASD es el backend experimental elegido para obtener rápidamente
+detección/tracking de rostros, VAD y scores de hablante activo. No será parte del modelo de dominio
+ni se considera todavía una dependencia estable. TalkingFaceKit conservará los timestamps fuente,
+traducirá los outputs a contratos propios y decidirá la política de segmentos. MediaPipe se reserva
+para pose y calidad visual; SyncNet se evaluará después para sincronización A/V explícita.
+
+Orden de implementación acordado:
+
+1. ~~agregar `DecodedAudioChunk` y audio PyAV por streaming con timestamps de fuente~~ — completo;
+2. construir un adapter experimental y acotado para DeepTalk-ASD — próximo;
+3. producir para un video speech intervals, face tracks, `raw_score`, segmentos candidatos,
+   razones y provenance, además de un overlay inspeccionable;
+4. evaluar seis casos mínimos y decidir si conservar DeepTalk, adaptar LR-ASD directamente o
+   comparar TalkNet;
+5. agregar orientación/calidad con MediaPipe y sincronización exacta con SyncNet;
+6. recién entonces generalizar el flujo a carpetas, datasets y ejecución batch.
+
+La generación de landmarks y meshes ya implementada se conserva como capacidad visual opcional;
+no es el centro del producto. El estado detallado, la justificación y los criterios de decisión se
+encuentran en [`PROJECT_DIRECTION.md`](PROJECT_DIRECTION.md), el
+[`roadmap`](docs/blueprint/roadmap.md) y el
+[`spike de DeepTalk-ASD`](docs/research/deeptalk_asd_compatibility.md).
+
+> **Estado:** el flujo de análisis descripto arriba es dirección de producto, no API disponible.
+> La sección siguiente enumera únicamente lo que funciona hoy.
 
 ## Funcionalidad actual
 
@@ -76,6 +115,27 @@ print(clip.source.metadata.stream_duration_seconds)  # duración informada del v
 La fuente y los límites de una secuencia no se pueden reasignar después de construirla. Una
 secuencia creada con `from_video` queda abierta hasta EOF (`end_seconds=None`): la duración
 informada permanece como metadata y no se usa como si fuera un timestamp final exacto.
+
+### Decodificar audio por streaming
+
+`stream_audio_chunks` abre el primer stream de audio y entrega chunks sobre el mismo timeline de
+fuente, sin cargar la pista completa:
+
+```python
+from talkingfacekit import stream_audio_chunks
+
+for chunk in stream_audio_chunks("portrait.webm", start_seconds=0.5, end_seconds=1.5):
+    print(chunk.start_sample_index)
+    print(chunk.start_timestamp_seconds)
+    print(chunk.samples.shape)  # (cantidad_de_samples, cantidad_de_canales)
+    print(chunk.sample_rate_hz, chunk.channel_layout)
+```
+
+Cada buffer es C-contiguous, sample-major y `float32`. PCM entero se normaliza a full scale;
+fuentes de punto flotante conservan su amplitud y no se recortan. La función no cambia sample rate,
+no mezcla canales y recorta los chunks que cruzan los límites solicitados con precisión de sample.
+Los índices continúan referidos al stream decodificado completo y los timestamps son PTS de fuente,
+no valores calculados desde la duración del video.
 
 Los trackers consumen este stream compartido en lugar de abrir el video por su cuenta. Así, la
 selección del stream, la conversión a RGB y las reglas de timestamps permanecen iguales para
@@ -433,7 +493,9 @@ pyproject.toml     Configuración y lista de dependencias
 uv.lock            Versiones exactas resueltas por uv
 AGENTS.md           Reglas compartidas para humanos y agentes
 CLAUDE.md           Importa AGENTS.md para Claude Code
-docs/               Decisiones de arquitectura
+PROJECT_DIRECTION.md Orientación de producto, opciones y decisiones de backend
+docs/architecture.md Decisiones arquitectónicas vigentes
+docs/blueprint/      Contratos objetivo y roadmap de implementación
 src/               Código de TalkingFaceKit
 tests/             Tests automáticos
 .venv/             Entorno local; nunca se sube a Git

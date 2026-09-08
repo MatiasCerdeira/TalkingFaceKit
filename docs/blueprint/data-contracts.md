@@ -109,27 +109,23 @@ No debería introducirse sólo para reducir repetición. Tiene que resolver oper
 recorte, alineación o persistencia en al menos dos familias de tracks. El timeline no incluye FPS
 porque un stream puede tener frame rate variable.
 
-## `DecodedAudioChunk` — objetivo
+## `DecodedAudioChunk` — disponible
 
-Contrato inicial propuesto, conservando la fuente:
+Contrato implementado, conservando la fuente:
 
 | Campo | Tipo/shape | Invariantes |
 | --- | --- | --- |
 | `start_sample_index` | `int` | índice base cero en el stream decodificado |
 | `start_timestamp_seconds` | `float` | timestamp finito del primer sample |
-| `sample_rate_hz` | `int` | positivo, constante dentro del stream |
+| `sample_rate_hz` | `int` | positivo; valor del chunk decodificado |
 | `channel_layout` | `str` | nombre explícito, por ejemplo `mono` o `stereo` |
-| `samples` | `float32[S, C]` | sample-major, amplitud nominal `[-1, 1]` |
+| `samples` | `float32[S, C]` | C-contiguous y sample-major; PCM flotante puede exceder `[-1, 1]` |
 
-Decisiones a validar en la primera entrega de audio:
-
-- si PyAV puede garantizar el timestamp del primer sample después de conversiones;
-- cómo representar muestras válidas fuera de `[-1, 1]` y clipping;
-- nombres canónicos de canales;
-- si el primer decode debe producir formato fuente entero o el canónico `float32`;
-- cómo representar discontinuidades y padding del decoder.
-
-No habrá downmix ni resample implícito.
+El contrato implementado usa PTS del frame y ajusta el timestamp cuando recorta muestras al límite
+del intervalo. PCM entero se normaliza a full scale; PCM flotante conserva valores, incluso fuera de
+`[-1, 1]`, sin clipping. `channel_layout` conserva el nombre entregado por FFmpeg, que puede ser
+`"1 channels"` cuando la fuente no declara una posición más específica. No hay downmix ni resample
+implícito. Discontinuidades entre PTS permanecen visibles en los timestamps.
 
 ## `AudioTrack` — objetivo
 
@@ -185,6 +181,55 @@ Colección ordenada de `face_id -> track`, con:
 
 Se prefiere una colección de tracks por identidad a agregar un eje variable de persona en
 `FaceLandmarkTrack`.
+
+## Contratos del análisis de hablante activo — objetivo inmediato
+
+La primera implementación necesita resultados simples y explícitos. Los nombres finales se fijarán
+con el código, pero deben conservar estas semánticas.
+
+### `SpeechInterval`
+
+| Campo | Semántica |
+| --- | --- |
+| `start_seconds`, `end_seconds` | intervalo semiabierto sobre tiempo fuente |
+| `raw_score` o evidencia opcional | valor del VAD con semántica declarada por backend |
+| `backend` | nombre y versión del detector |
+
+### `ActiveSpeakerObservation`
+
+| Campo | Semántica |
+| --- | --- |
+| `face_id` | identidad local dentro del video |
+| `start_seconds`, `end_seconds` | ventana evaluada en tiempo fuente |
+| `raw_score` | output LR-ASD sin calibrarlo ni renombrarlo confidence |
+| `face_box` o referencia | rostro/crop al que corresponde el score |
+| `valid` | el backend produjo una observación interpretable |
+
+Dos rostros pueden tener score positivo simultáneamente. El contrato no fuerza que los scores sumen
+uno, pertenezcan a `[0, 1]` ni elijan un ganador.
+
+### `SegmentDecision`
+
+| Campo | Semántica |
+| --- | --- |
+| `start_seconds`, `end_seconds` | intervalo agregado en tiempo fuente |
+| `status` | `candidate`, `accepted`, `rejected` o `uncertain` |
+| `face_id` | rostro elegido, o ausencia explícita |
+| `reasons` | códigos estables y legibles, posiblemente varios |
+| `evidence` | referencias a speech, face y ASD observations usadas |
+| `camera_facing`, `av_sync` | estado medido o `not_evaluated`/`not_measurable` |
+
+El primer milestone sólo puede producir `candidate`, `rejected` o `uncertain`: todavía no mide pose
+ni sync. `accepted` aparece cuando la política completa esté definida.
+
+### `VideoAnalysisReport`
+
+Contiene source/interval, metadata, capacidades ejecutadas, face tracks, speech intervals, raw ASD
+observations, segment decisions, issues, provenance y runtime. El JSON persistido tiene schema
+versionado independiente de la versión Python. El reporte no incluye frames o audio completos.
+
+La política que produce `SegmentDecision` es una operación de TalkingFaceKit separada del backend.
+Debe registrar thresholds, top-versus-second margin, smoothing, unión de gaps y duración mínima.
 
 ## `HeadPoseTrack` — objetivo
 

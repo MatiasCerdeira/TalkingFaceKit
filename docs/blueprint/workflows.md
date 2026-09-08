@@ -3,6 +3,43 @@
 Esta guía está organizada por resultados de usuario. Las APIs marcadas como objetivo son bocetos
 para discutir y validar antes de implementarlas.
 
+## Flujo prioritario: analizar un video
+
+**Objetivo inmediato.** El primer flujo nuevo combina capacidades concretas sin construir todavía
+una colección ni un pipeline genérico:
+
+```python
+from pathlib import Path
+
+from talkingfacekit.analysis import analyze_video
+from talkingfacekit.integrations.deeptalk import DeepTalkAnalyzer
+
+report = analyze_video(
+    "interview.mp4",
+    analyzer=DeepTalkAnalyzer(model_dir=Path("models/deeptalk")),
+)
+
+for segment in report.segments:
+    print(segment.start_seconds, segment.end_seconds, segment.status, segment.reasons)
+```
+
+Los nombres son ilustrativos. El contrato importante es que el resultado incluya metadata, speech
+intervals, face tracks, raw ASD observations, segmentos preliminares, razones, capacidades no
+evaluadas y provenance. También debe poder generar un JSON y un overlay con la misma información.
+
+El orden interno es:
+
+1. abrir `VideoSource` y seleccionar intervalo;
+2. obtener video y audio con timestamps fuente;
+3. adaptar inputs a DeepTalk-ASD;
+4. traducir outputs a valores core;
+5. aplicar política temporal de TalkingFaceKit;
+6. persistir/renderizar sin repetir inferencia.
+
+En esta primera versión, `camera_facing` y `av_sync` son `not_evaluated`. Se incorporan en etapas
+posteriores. El folder workflow ejecutará esta misma operación por archivo una vez que el reporte sea
+estable.
+
 ## 1. Inspección y selección de media
 
 ### Inspeccionar el primer stream — disponible
@@ -82,10 +119,10 @@ El contrato de un tensor de video completo sólo se publicará si casos reales j
 
 ## 3. Audio
 
-### Decodificar chunks — objetivo, siguiente gran frontera
+### Decodificar chunks — disponible
 
 ```python
-from talkingfacekit.audio import stream_audio_chunks
+from talkingfacekit import stream_audio_chunks
 
 for chunk in stream_audio_chunks(
     "session.webm",
@@ -97,8 +134,10 @@ for chunk in stream_audio_chunks(
     consume(chunk.samples, chunk.start_timestamp_seconds)
 ```
 
-El primer contrato debería conservar el sample rate y layout originales. El resample, downmix y
-normalización deben ser operaciones explícitas que registren sus parámetros.
+El contrato conserva sample rate, cantidad de canales y layout decodificado. Entrega
+`float32[samples, channels]`, normaliza PCM entero, no recorta PCM flotante y ajusta el PTS al
+recortar límites con precisión de sample. El resample, downmix y normalización todavía son objetivos
+y deberán ser operaciones explícitas que registren sus parámetros.
 
 ### Transformaciones de audio — objetivo
 
@@ -155,6 +194,25 @@ un cruce de identidades con una asignación arbitraria.
 El tracker de landmarks puede recibir una región o un `face_id` y producir un
 `FaceLandmarkTrack`. Esto permite reutilizar el contrato actual sin agregar un eje de rostro a todos
 los arrays existentes.
+
+### Hablante activo por rostro — objetivo inmediato
+
+DeepTalk-ASD es el primer backend experimental. Combina detección/tracking, Silero VAD y LR-ASD,
+pero TalkingFaceKit conserva el significado del resultado:
+
+```python
+for observation in report.active_speaker_observations:
+    print(
+        observation.face_id,
+        observation.start_seconds,
+        observation.end_seconds,
+        observation.raw_score,
+    )
+```
+
+`raw_score` no es probability. La selección considera VAD, mejor score, segundo score, margen,
+continuidad y duración. Debe poder devolver `none` o `ambiguous`; no se fuerza un rostro ganador en
+cada ventana.
 
 ## 5. Limpieza y control de calidad
 
@@ -342,15 +400,17 @@ resultado debe expresar incertidumbre, superposición y hablante fuera de cámar
 ### Estimar offset — objetivo
 
 ```python
-sync = estimate_av_sync(
-    mouth_motion=landmarks,
-    audio_energy=features,
+sync = SyncNetSynchronizer(model_path="models/syncnet.pt").estimate(
+    sequence,
+    face_track=report.face_tracks["face_2"],
     search_range_seconds=(-0.5, 0.5),
 )
 ```
 
-El resultado incluye offset, score, rango analizado y método. Aplicar la corrección es otra
-operación para evitar modificar timestamps por sorpresa.
+El nombre concreto puede cambiar después del spike. El resultado incluye offset, score, rango
+analizado, método y un estado `acceptable`, `out_of_sync`, `uncertain` o `not_measurable`. Aplicar la
+corrección es otra operación para evitar modificar timestamps por sorpresa. Correlacionar energía
+con mouth motion puede servir como diagnóstico, pero no sustituye un modelo A/V validado.
 
 ### Drift y discontinuidades — investigación
 
@@ -462,7 +522,11 @@ for item in dataset:
 Cada entrada debería contener ID estable, fuente, intervalo, splits y metadata del usuario sin
 acoplar el core a un dataset conocido.
 
-### Ejecución por lotes — objetivo tardío
+El primer acceso desde carpeta será más simple que un dataset general: descubrimiento determinista,
+un `VideoAnalysisReport` por archivo y un reporte agregado. Debe reutilizar exactamente el analizador
+de un video y aislar fallos por fuente. No se implementa antes de estabilizar ese resultado.
+
+### Ejecución por lotes — objetivo posterior al reporte de un video
 
 - límite explícito de workers y dispositivos;
 - progreso y logs estructurados;
