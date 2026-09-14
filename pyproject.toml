@@ -3,13 +3,16 @@ name = "talkingfacekit"
 version = "0.1.0"
 description = "A modular library for processing talking-face videos"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     "av>=18.0.0",
-    "numpy>=2.4.6",
+    "numpy==1.26.4",
 ]
 
 [project.optional-dependencies]
+active-speaker-deeptalk = [
+    "deeptalk-asd==0.3.1",
+]
 tracking-mediapipe = [
     "mediapipe>=1.0.0",
 ]
@@ -26,6 +29,14 @@ dev = [
     "mypy>=2.3.0",
     "pytest>=9.1.1",
     "ruff>=0.16.2",
+]
+
+[tool.uv]
+conflicts = [
+    [
+        { extra = "active-speaker-deeptalk" },
+        { extra = "tracking-mediapipe" },
+    ],
 ]
 
 [tool.pytest.ini_options]
