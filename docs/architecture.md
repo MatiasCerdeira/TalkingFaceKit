@@ -128,6 +128,8 @@ src/talkingfacekit/
 ├── metadata.py       Backend-independent metadata value types
 ├── mesh.py           Backend-independent animated triangular-mesh contract
 ├── video.py          Backend-independent source and streamed-frame contracts
+├── integrations/
+│   └── deeptalk.py    Experimental offline DeepTalk A/V adapter and copied results
 ├── rendering/
 │   └── plotly.py      Optional offline interactive HTML renderer
 ├── sequence.py       User-facing sequence aggregate
@@ -175,6 +177,30 @@ not retain previous arrays. Source FPS is metadata only and is never used to syn
 Callers decide whether to retain yielded pixels and therefore own any resulting memory growth.
 Computer-vision backends should consume this boundary instead of duplicating PyAV access, interval
 filtering, color conversion, or timestamp validation.
+
+The experimental DeepTalk module implements its initial offline adaptation. It samples source PTS
+onto a 25 Hz grid anchored at the sequence start and chooses the nearest decoded frame
+deterministically. It does not create slots before the first or after the last decoded PTS. RGB
+pixels become packed DeepTalk `RGB24` only at this boundary. Audio is downmixed and resampled
+through PyAV/libswresample to mono 16 kHz signed `int16`. It is emitted as 480-sample frames plus a
+final partial frame. Source PTS
+quantization up to one millisecond is tolerated; larger gaps or overlaps fail because DeepTalk would
+otherwise concatenate them silently.
+
+Both streams use relative media time (`source_time - sequence.start_seconds`) only inside the
+adapter. Audio timestamps identify each chunk's exclusive end. A lazy two-way merge feeds video
+before audio on exact ties, with no realtime playback, clock, thread, or wall-clock timestamp.
+DeepTalk is evaluated incrementally in roughly one-second windows before its ten-second audio buffer
+can evict earlier samples. Results are copied into immutable integration-specific observations and
+score windows on the original source timeline; no DeepTalk profiles, images, or embeddings escape.
+The stored window bounds are consecutive, but DeepTalk 0.3.1 internally uses an inclusive end for
+video while audio remains half-open. A video frame exactly on a boundary may therefore contribute
+to both adjacent backend evaluations; the adapter does not distort timestamps to conceal this.
+
+DeepTalk 0.3.1 requires one localized private shim for offline use. After verifying the installed
+version and expected internal speaker-detector layout, the adapter disables only its redundant
+float-based video throttle and wall-clock track expiry. A changed version or required private field
+fails clearly instead of applying the shim speculatively.
 
 `DecodedAudioChunk` establishes the shared audio-streaming contract:
 
@@ -280,7 +306,8 @@ must be documented here before becoming public contracts.
 | Plotly as optional HTML renderer           | Provides a portable interactive demonstration without coupling core mesh data to a graphics framework. |
 | Single-video analysis before collection    | Validates the result model and client value before generalizing folder and batch orchestration.         |
 | DeepTalk-ASD as experimental ASD backend   | Reuses a working face/VAD/LR-ASD pipeline while keeping its limitations outside the core.               |
-| TalkingFaceKit-owned segment policy        | Raw backend scores are evidence, not calibrated probabilities or final segment decisions.              |
+| Offline source-time DeepTalk scheduling    | Keeps A/V deterministic without presenting media timestamps as realtime wall-clock values.             |
+| TalkingFaceKit-owned segment policy        | Backend scores are evidence, not calibrated probabilities or final segment decisions.                  |
 | Separate visual-quality and sync stages    | MediaPipe pose and SyncNet offset answer different questions from active-speaker attribution.           |
 
 ## Pending decisions
@@ -291,8 +318,8 @@ must be documented here before becoming public contracts.
 - Cross-modal timestamp and synchronization representation beyond landmark source timestamps.
 - Exact core schemas for face tracks, speech intervals, raw ASD observations, segment decisions,
   issues, and analysis provenance; publish only those required by the one-video slice.
-- Whether DeepTalk should run in a separate Python environment/process or as an optional in-process
-  dependency after compatibility and native-crash risks are evaluated during implementation.
+- Whether production DeepTalk execution needs process isolation to contain native-model crashes;
+  the experimental adapter currently targets the optional in-process dependency.
 - Thresholds, smoothing, score margins, and minimum-duration rules, which require labeled examples.
 - Facial-animation parameter schema and FLAME conventions.
 - Serialization formats and versioning policy for data other than landmark tracks.
