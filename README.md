@@ -24,8 +24,8 @@ para pose y calidad visual; SyncNet se evaluará después para sincronización A
 Orden de implementación acordado:
 
 1. ~~agregar `DecodedAudioChunk` y audio PyAV por streaming con timestamps de fuente~~ — completo;
-2. construir un adapter experimental y acotado para DeepTalk-ASD — implementado con tests
-   sintéticos; falta validarlo end-to-end con modelos reales;
+2. construir un adapter experimental y acotado para DeepTalk-ASD — implementado y validado con
+   tests sintéticos y un smoke test end-to-end con modelos reales;
 3. producir para un video speech intervals, face tracks, `raw_score`, segmentos candidatos,
    razones y provenance, además de un overlay inspeccionable;
 4. evaluar seis casos mínimos y decidir si conservar DeepTalk, adaptar LR-ASD directamente o
@@ -163,9 +163,20 @@ print(result.score_windows)
 
 El código de adaptación muestrea video a 25 Hz y convierte audio a mono PCM `int16` de 16 kHz dentro
 del boundary experimental. Usa únicamente tiempo de medio relativo para alimentar el detector y
-devuelve todos los timestamps sobre la timeline fuente. Esta ruta sólo está validada con media
-sintética y un detector fake: todavía no se ejecutó end-to-end un MP4 con los modelos reales.
-DeepTalk administra sus propios modelos al construir el detector; TalkingFaceKit no los incluye.
+devuelve todos los timestamps sobre la timeline fuente. Además de los tests sintéticos, esta ruta
+se validó en CPU con DeepTalk-ASD 0.3.1 y sus modelos oficiales sobre un MP4 H.264/AAC de 10,6
+segundos con una sola persona frontal. El smoke test obtuvo una identidad estable y scores finitos;
+no evalúa todavía precisión, calibración ni escenas con varias personas. DeepTalk administra sus
+propios modelos al construir el detector y los guarda fuera del repositorio; TalkingFaceKit no los
+incluye. Su extractor opcional de voiceprints permanece desactivado sin `sherpa-onnx`, que no forma
+parte del extra y no fue necesario para ejecutar VAD, tracking y LR-ASD.
+
+El test con modelos y video reales es explícitamente opt-in y se omite en la suite normal:
+
+```bash
+TALKINGFACEKIT_DEEPTALK_TEST_VIDEO=/ruta/al/video.mp4 \
+  uv run --extra active-speaker-deeptalk pytest tests/test_deeptalk_e2e.py
+```
 
 Los trackers consumen este stream compartido en lugar de abrir el video por su cuenta. Así, la
 selección del stream, la conversión a RGB y las reglas de timestamps permanecen iguales para

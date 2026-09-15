@@ -202,6 +202,14 @@ version and expected internal speaker-detector layout, the adapter disables only
 float-based video throttle and wall-clock track expiry. A changed version or required private field
 fails clearly instead of applying the shim speculatively.
 
+A CPU smoke test has exercised this complete boundary with the official DeepTalk-ASD 0.3.1 models
+and a 10.6-second H.264/AAC file containing one frontal speaker. It produced one stable face identity
+and finite scores while preserving the observed A/V timeline. This validates runtime execution and
+wiring, not model accuracy, score calibration, long-input memory behavior, or multi-person tracking.
+DeepTalk's optional WeSpeaker voiceprint extractor does not initialize without `sherpa-onnx`; that
+dependency is intentionally absent because the VAD, face tracking, and LR-ASD path does not require
+it for this MVP.
+
 `DecodedAudioChunk` establishes the shared audio-streaming contract:
 
 - `start_sample_index`: non-negative index of the first sample in complete-stream decode order;
