@@ -16,6 +16,7 @@ from typing import Any, Literal, cast
 
 import av
 import numpy as np
+from numpy.typing import NDArray
 
 from talkingfacekit.audio import DecodedAudioChunk
 from talkingfacekit.io.audio import stream_audio_chunks
@@ -30,6 +31,7 @@ _FRAME_PERIOD_SECONDS = 1 / _VIDEO_FPS
 _VIDEO_TIMESTAMP_TOLERANCE_SECONDS = 1e-9
 _AUDIO_SAMPLE_RATE_HZ = 16_000
 _AUDIO_FRAME_SAMPLE_COUNT = 480
+_AUDIO_REPAIR_BLOCK_SAMPLE_COUNT = 8_192
 _AUDIO_TIMESTAMP_TOLERANCE_SECONDS = 1e-3
 _AUDIO_SAMPLE_COUNT_TOLERANCE = 1e-7
 _SCORE_WINDOW_SECONDS = 1.0
@@ -39,6 +41,7 @@ _INSPIREFACE_RESOURCE_SHA256 = "5037ba1f49905b783a1c973d5d58b834a645922cc2814c8e
 _EventKind = Literal["video", "audio"]
 _DeepTalkEvent = tuple[_EventKind, float, object]
 _SpeechIntervalStatus = Literal["confirmed", "rejected", "incomplete"]
+_AudioTimelineRepairKind = Literal["audio_gap_filled", "audio_overlap_trimmed"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +176,60 @@ class DeepTalkAnalysisProvenance:
 
 
 @dataclass(frozen=True, slots=True)
+class DeepTalkAudioTimelineRepair:
+    """Describe one explicit repair applied to the source-audio timeline.
+
+    Parameters
+    ----------
+    kind
+        Whether missing source time was filled with silence or overlapping samples were trimmed.
+    source_start_seconds
+        Inclusive start of the affected region on the source-media timeline.
+    source_end_seconds
+        Exclusive end of the affected region on the source-media timeline.
+    adjusted_sample_count
+        Number of source-rate samples inserted or removed per channel.
+    sample_rate_hz
+        Source sample rate used to quantize the repair.
+    """
+
+    kind: _AudioTimelineRepairKind
+    source_start_seconds: float
+    source_end_seconds: float
+    adjusted_sample_count: int
+    sample_rate_hz: int
+
+    def __post_init__(self) -> None:
+        """Validate the repair kind, source bounds, and sample count."""
+        if self.kind not in {"audio_gap_filled", "audio_overlap_trimmed"}:
+            raise ValueError(f"unsupported audio timeline repair kind: {self.kind}")
+        if not math.isfinite(self.source_start_seconds) or self.source_start_seconds < 0:
+            raise ValueError("repair source_start_seconds must be finite and non-negative")
+        if (
+            not math.isfinite(self.source_end_seconds)
+            or self.source_end_seconds <= self.source_start_seconds
+        ):
+            raise ValueError("repair source_end_seconds must be finite and after its start")
+        if (
+            isinstance(self.adjusted_sample_count, bool)
+            or not isinstance(self.adjusted_sample_count, int)
+            or self.adjusted_sample_count <= 0
+        ):
+            raise ValueError("repair adjusted_sample_count must be a positive integer")
+        if (
+            isinstance(self.sample_rate_hz, bool)
+            or not isinstance(self.sample_rate_hz, int)
+            or self.sample_rate_hz <= 0
+        ):
+            raise ValueError("repair sample_rate_hz must be a positive integer")
+
+    @property
+    def duration_seconds(self) -> float:
+        """Duration inserted or removed after source-rate sample quantization."""
+        return self.adjusted_sample_count / self.sample_rate_hz
+
+
+@dataclass(frozen=True, slots=True)
 class DeepTalkAnalysisResult:
     """Contain copied face observations and diagnostic score windows for one sequence.
 
@@ -186,6 +243,8 @@ class DeepTalkAnalysisResult:
         Consecutive source-timeline windows containing unchanged DeepTalk scores.
     provenance
         Backend version, fixed media rates, and optional capability status.
+    audio_timeline_repairs
+        Explicit gap fills and overlap trims applied before resampling for DeepTalk.
     issues
         Immutable diagnostic codes for non-fatal source coverage limitations.
     """
@@ -194,6 +253,7 @@ class DeepTalkAnalysisResult:
     speech_intervals: tuple[DeepTalkSpeechInterval, ...]
     score_windows: tuple[DeepTalkScoreWindow, ...]
     provenance: DeepTalkAnalysisProvenance
+    audio_timeline_repairs: tuple[DeepTalkAudioTimelineRepair, ...] = ()
     issues: tuple[str, ...] = ()
 
 
@@ -221,8 +281,8 @@ def analyze_sequence(sequence: TalkingFaceSequence) -> DeepTalkAnalysisResult:
     TypeError
         If ``sequence`` is not a :class:`TalkingFaceSequence`.
     ValueError
-        If the source has no audio or decoded audio is discontinuous or does not cover a bounded
-        sequence interval.
+        If the source has no audio, its decoded format changes within the selected interval, or no
+        audio samples can be decoded.
     RuntimeError
         If the optional dependency is absent, detector construction fails, DeepTalk is not version
         0.3.1, or its expected private shim boundary changed.
@@ -241,7 +301,12 @@ def analyze_sequence(sequence: TalkingFaceSequence) -> DeepTalkAnalysisResult:
     deeptalk_module = _load_deeptalk_module()
     detector = _create_deeptalk_detector(deeptalk_module)
     video_events = _iter_deeptalk_video_frames(sequence, deeptalk_module)
-    audio_events = _iter_deeptalk_audio_frames(sequence, deeptalk_module)
+    audio_timeline_repairs: list[DeepTalkAudioTimelineRepair] = []
+    audio_events = _iter_deeptalk_audio_frames(
+        sequence,
+        deeptalk_module,
+        audio_timeline_repairs,
+    )
 
     face_observations: list[DeepTalkFaceObservation] = []
     speech_intervals: list[DeepTalkSpeechInterval] = []
@@ -331,6 +396,10 @@ def analyze_sequence(sequence: TalkingFaceSequence) -> DeepTalkAnalysisResult:
     if incomplete_interval is not None:
         speech_intervals.append(incomplete_interval)
 
+    for repair in audio_timeline_repairs:
+        if repair.kind not in issues:
+            issues.append(repair.kind)
+
     if next_window_start_seconds < analysis_end_seconds - _VIDEO_TIMESTAMP_TOLERANCE_SECONDS:
         score_window = _evaluate_score_window(
             backend,
@@ -348,6 +417,7 @@ def analyze_sequence(sequence: TalkingFaceSequence) -> DeepTalkAnalysisResult:
         provenance=DeepTalkAnalysisProvenance(
             backend_version=_DEEPTALK_SUPPORTED_VERSION,
         ),
+        audio_timeline_repairs=tuple(audio_timeline_repairs),
         issues=tuple(issues),
     )
 
@@ -434,8 +504,9 @@ def _to_deeptalk_video_frame(
 def _iter_deeptalk_audio_frames(
     sequence: TalkingFaceSequence,
     deeptalk_module: ModuleType,
+    repairs: list[DeepTalkAudioTimelineRepair] | None = None,
 ) -> Iterator[tuple[float, object]]:
-    """Convert source audio lazily to timestamped DeepTalk PCM frames."""
+    """Normalize source timestamps and lazily produce continuous DeepTalk PCM frames."""
     chunks = stream_audio_chunks(
         sequence.source.path,
         start_seconds=sequence.start_seconds,
@@ -446,7 +517,8 @@ def _iter_deeptalk_audio_frames(
     except StopIteration as error:
         raise ValueError("DeepTalk analysis received no decoded audio samples") from error
 
-    anchor_seconds = _validate_first_audio_chunk(sequence, first_chunk)
+    repair_records = [] if repairs is None else repairs
+    anchor_seconds = sequence.start_seconds
     input_sample_rate_hz = first_chunk.sample_rate_hz
     input_format = (
         first_chunk.sample_rate_hz,
@@ -457,7 +529,7 @@ def _iter_deeptalk_audio_frames(
         max(
             0,
             math.floor(
-                (sequence.end_seconds - anchor_seconds) * _AUDIO_SAMPLE_RATE_HZ
+                (sequence.end_seconds - sequence.start_seconds) * _AUDIO_SAMPLE_RATE_HZ
                 + _AUDIO_SAMPLE_COUNT_TOLERANCE
             ),
         )
@@ -470,7 +542,7 @@ def _iter_deeptalk_audio_frames(
         rate=_AUDIO_SAMPLE_RATE_HZ,
         frame_size=_AUDIO_FRAME_SAMPLE_COUNT,
     )
-    input_sample_count = 0
+    normalized_input_sample_count = 0
     emitted_sample_count = 0
     backend = cast(Any, deeptalk_module)
 
@@ -492,11 +564,7 @@ def _iter_deeptalk_audio_frames(
                 continue
 
             emitted_sample_count += int(pcm.size)
-            relative_end_seconds = (
-                anchor_seconds
-                - sequence.start_seconds
-                + emitted_sample_count / _AUDIO_SAMPLE_RATE_HZ
-            )
+            relative_end_seconds = emitted_sample_count / _AUDIO_SAMPLE_RATE_HZ
             audio_frame = backend.AudioFrame(
                 data=pcm.tobytes(),
                 sample_rate=_AUDIO_SAMPLE_RATE_HZ,
@@ -505,56 +573,168 @@ def _iter_deeptalk_audio_frames(
             )
             yield relative_end_seconds, audio_frame
 
+    def resample_source_samples(
+        samples: NDArray[np.float32],
+    ) -> Iterator[tuple[float, object]]:
+        if samples.shape[0] == 0:
+            return
+        input_frame = _samples_to_av_frame(
+            samples,
+            sample_rate_hz=input_sample_rate_hz,
+            channel_layout=first_chunk.channel_layout,
+        )
+        yield from convert_outputs(resampler.resample(input_frame))
+
+    def fill_silence(sample_count: int) -> Iterator[tuple[float, object]]:
+        remaining_sample_count = sample_count
+        while remaining_sample_count > 0:
+            block_sample_count = min(
+                remaining_sample_count,
+                _AUDIO_REPAIR_BLOCK_SAMPLE_COUNT,
+            )
+            silence = np.zeros(
+                (block_sample_count, first_chunk.channel_count),
+                dtype=np.float32,
+            )
+            yield from resample_source_samples(silence)
+            remaining_sample_count -= block_sample_count
+
     for chunk_index, chunk in enumerate(chain((first_chunk,), chunks)):
         if chunk_index > 0:
             _validate_audio_chunk_format(chunk, expected=input_format)
-            expected_start_seconds = anchor_seconds + input_sample_count / input_sample_rate_hz
-            _validate_audio_continuity(
-                chunk.start_timestamp_seconds,
-                expected_start_seconds=expected_start_seconds,
+
+        expected_start_seconds = (
+            anchor_seconds + normalized_input_sample_count / input_sample_rate_hz
+        )
+        difference_seconds = chunk.start_timestamp_seconds - expected_start_seconds
+        tolerance_seconds = max(
+            _AUDIO_TIMESTAMP_TOLERANCE_SECONDS,
+            1 / input_sample_rate_hz,
+        )
+        if difference_seconds > tolerance_seconds:
+            gap_sample_count = _quantize_audio_repair_sample_count(
+                difference_seconds,
+                input_sample_rate_hz,
             )
+            _append_audio_timeline_repair(
+                repair_records,
+                DeepTalkAudioTimelineRepair(
+                    kind="audio_gap_filled",
+                    source_start_seconds=expected_start_seconds,
+                    source_end_seconds=chunk.start_timestamp_seconds,
+                    adjusted_sample_count=gap_sample_count,
+                    sample_rate_hz=input_sample_rate_hz,
+                ),
+            )
+            yield from fill_silence(gap_sample_count)
+            normalized_input_sample_count += gap_sample_count
 
-        input_frame = _decoded_chunk_to_av_frame(chunk)
-        input_sample_count += chunk.sample_count
-        yield from convert_outputs(resampler.resample(input_frame))
+        samples = chunk.samples
+        if difference_seconds < -tolerance_seconds:
+            overlap_sample_count = min(
+                _quantize_audio_repair_sample_count(
+                    -difference_seconds,
+                    input_sample_rate_hz,
+                ),
+                chunk.sample_count,
+            )
+            overlap_end_seconds = (
+                chunk.start_timestamp_seconds + overlap_sample_count / input_sample_rate_hz
+            )
+            _append_audio_timeline_repair(
+                repair_records,
+                DeepTalkAudioTimelineRepair(
+                    kind="audio_overlap_trimmed",
+                    source_start_seconds=chunk.start_timestamp_seconds,
+                    source_end_seconds=overlap_end_seconds,
+                    adjusted_sample_count=overlap_sample_count,
+                    sample_rate_hz=input_sample_rate_hz,
+                ),
+            )
+            samples = np.ascontiguousarray(samples[overlap_sample_count:], dtype=np.float32)
 
-    decoded_end_seconds = anchor_seconds + input_sample_count / input_sample_rate_hz
-    _validate_bounded_audio_end(sequence, decoded_end_seconds, input_sample_rate_hz)
+        normalized_input_sample_count += int(samples.shape[0])
+        yield from resample_source_samples(samples)
+
+    if sequence.end_seconds is not None:
+        expected_end_seconds = anchor_seconds + normalized_input_sample_count / input_sample_rate_hz
+        trailing_gap_seconds = sequence.end_seconds - expected_end_seconds
+        tolerance_seconds = max(
+            _AUDIO_TIMESTAMP_TOLERANCE_SECONDS,
+            1 / input_sample_rate_hz,
+        )
+        if trailing_gap_seconds > tolerance_seconds:
+            trailing_gap_sample_count = _quantize_audio_repair_sample_count(
+                trailing_gap_seconds,
+                input_sample_rate_hz,
+            )
+            _append_audio_timeline_repair(
+                repair_records,
+                DeepTalkAudioTimelineRepair(
+                    kind="audio_gap_filled",
+                    source_start_seconds=expected_end_seconds,
+                    source_end_seconds=sequence.end_seconds,
+                    adjusted_sample_count=trailing_gap_sample_count,
+                    sample_rate_hz=input_sample_rate_hz,
+                ),
+            )
+            yield from fill_silence(trailing_gap_sample_count)
+
     yield from convert_outputs(resampler.resample(None))
 
 
-def _decoded_chunk_to_av_frame(chunk: DecodedAudioChunk) -> av.AudioFrame:
-    planar_samples = np.ascontiguousarray(chunk.samples.transpose(), dtype=np.float32)
+def _samples_to_av_frame(
+    samples: NDArray[np.float32],
+    *,
+    sample_rate_hz: int,
+    channel_layout: str,
+) -> av.AudioFrame:
+    planar_samples = np.ascontiguousarray(samples.transpose(), dtype=np.float32)
     frame = av.AudioFrame.from_ndarray(
         planar_samples,
         format="fltp",
-        layout=chunk.channel_layout,
+        layout=channel_layout,
     )
-    frame.sample_rate = chunk.sample_rate_hz
+    frame.sample_rate = sample_rate_hz
     return frame
 
 
-def _validate_first_audio_chunk(
-    sequence: TalkingFaceSequence,
-    chunk: DecodedAudioChunk,
-) -> float:
-    tolerance_seconds = max(
-        _AUDIO_TIMESTAMP_TOLERANCE_SECONDS,
-        1 / chunk.sample_rate_hz,
-    )
-    difference_seconds = chunk.start_timestamp_seconds - sequence.start_seconds
-    if difference_seconds > tolerance_seconds:
-        raise ValueError(
-            "Decoded audio has a leading gap: "
-            f"expected={sequence.start_seconds}, actual={chunk.start_timestamp_seconds}, "
-            f"gap={difference_seconds} seconds"
+def _quantize_audio_repair_sample_count(duration_seconds: float, sample_rate_hz: int) -> int:
+    """Round one positive timestamp discrepancy to the nearest source sample."""
+    sample_count = math.floor(duration_seconds * sample_rate_hz + 0.5)
+    if sample_count <= 0:
+        raise RuntimeError(
+            "Audio timestamp discrepancy exceeded tolerance but quantized to no samples"
         )
-    if difference_seconds < -tolerance_seconds:
-        raise ValueError(
-            "Decoded audio begins before the requested interval: "
-            f"sequence_start={sequence.start_seconds}, actual={chunk.start_timestamp_seconds}"
+    return sample_count
+
+
+def _append_audio_timeline_repair(
+    repairs: list[DeepTalkAudioTimelineRepair],
+    repair: DeepTalkAudioTimelineRepair,
+) -> None:
+    """Append a repair, coalescing adjacent adjustments of the same kind and rate."""
+    if not repairs:
+        repairs.append(repair)
+        return
+
+    previous = repairs[-1]
+    if (
+        previous.kind == repair.kind
+        and previous.sample_rate_hz == repair.sample_rate_hz
+        and abs(repair.source_start_seconds - previous.source_end_seconds)
+        <= _AUDIO_TIMESTAMP_TOLERANCE_SECONDS
+    ):
+        repairs[-1] = DeepTalkAudioTimelineRepair(
+            kind=previous.kind,
+            source_start_seconds=previous.source_start_seconds,
+            source_end_seconds=max(previous.source_end_seconds, repair.source_end_seconds),
+            adjusted_sample_count=(previous.adjusted_sample_count + repair.adjusted_sample_count),
+            sample_rate_hz=previous.sample_rate_hz,
         )
-    return max(chunk.start_timestamp_seconds, sequence.start_seconds)
+        return
+
+    repairs.append(repair)
 
 
 def _validate_audio_chunk_format(
@@ -567,48 +747,6 @@ def _validate_audio_chunk_format(
         raise ValueError(
             "Decoded audio format changed within the sequence: "
             f"expected={expected}, actual={observed}"
-        )
-
-
-def _validate_audio_continuity(
-    actual_start_seconds: float,
-    *,
-    expected_start_seconds: float,
-) -> None:
-    difference_seconds = actual_start_seconds - expected_start_seconds
-    if difference_seconds > _AUDIO_TIMESTAMP_TOLERANCE_SECONDS:
-        raise ValueError(
-            "Decoded audio has a gap that DeepTalk cannot represent: "
-            f"expected={expected_start_seconds}, actual={actual_start_seconds}, "
-            f"gap={difference_seconds} seconds"
-        )
-    if difference_seconds < -_AUDIO_TIMESTAMP_TOLERANCE_SECONDS:
-        raise ValueError(
-            "Decoded audio overlaps earlier samples: "
-            f"expected={expected_start_seconds}, actual={actual_start_seconds}, "
-            f"overlap={-difference_seconds} seconds"
-        )
-
-
-def _validate_bounded_audio_end(
-    sequence: TalkingFaceSequence,
-    decoded_end_seconds: float,
-    sample_rate_hz: int,
-) -> None:
-    if sequence.end_seconds is None:
-        return
-    tolerance_seconds = max(_AUDIO_TIMESTAMP_TOLERANCE_SECONDS, 1 / sample_rate_hz)
-    difference_seconds = sequence.end_seconds - decoded_end_seconds
-    if difference_seconds > tolerance_seconds:
-        raise ValueError(
-            "Decoded audio has a trailing gap: "
-            f"decoded_end={decoded_end_seconds}, sequence_end={sequence.end_seconds}, "
-            f"gap={difference_seconds} seconds"
-        )
-    if difference_seconds < -tolerance_seconds:
-        raise ValueError(
-            "Decoded audio extends beyond the requested interval: "
-            f"decoded_end={decoded_end_seconds}, sequence_end={sequence.end_seconds}"
         )
 
 
@@ -631,6 +769,7 @@ def _merge_av_events(
 
 
 def _load_deeptalk_module() -> ModuleType:
+    os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
     try:
         deeptalk_asd = import_module("deeptalk_asd")
     except ModuleNotFoundError as error:

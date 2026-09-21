@@ -183,9 +183,21 @@ onto a 25 Hz grid anchored at the sequence start and chooses the nearest decoded
 deterministically. It does not create slots before the first or after the last decoded PTS. RGB
 pixels become packed DeepTalk `RGB24` only at this boundary. Audio is downmixed and resampled
 through PyAV/libswresample to mono 16 kHz signed `int16`. It is emitted as 480-sample frames plus a
-final partial frame. Source PTS
-quantization up to one millisecond is tolerated; larger gaps or overlaps fail because DeepTalk would
-otherwise concatenate them silently.
+final partial frame. Before resampling, source PTS are reconciled against a source-rate sample grid
+anchored at the selected sequence start. Quantization up to one millisecond is treated as timestamp
+jitter. Larger gaps are hard-compensated with streamed zero samples and overlaps are trimmed from
+the later chunk, matching FFmpeg's hard timestamp-compensation semantics without materializing the
+track. Bounded trailing gaps are filled to the requested end. Every adjustment is copied into an
+immutable `DeepTalkAudioTimelineRepair` and surfaced through issue codes; DeepTalk therefore
+receives continuous PCM without hiding changes to the source timeline.
+
+The optional demo report lives under `talkingfacekit.demo`, outside the core and stable rendering
+surface. It serializes copied DeepTalk observations into one offline HTML document and references
+the unchanged local video by file URL. Browser playback time is the only synchronization clock for
+boxes, VAD state, raw scores, repair markers, and the diagnostic timeline. The report labels the
+largest score during speech as a `top candidate`; it does not add a threshold, probability, or
+active-speaker decision. This isolation allows the demo UI to be removed or replaced without
+changing core contracts or the DeepTalk adapter.
 
 Both streams use relative media time (`source_time - sequence.start_seconds`) only inside the
 adapter. Audio timestamps identify each chunk's exclusive end. A lazy two-way merge feeds video
@@ -206,9 +218,11 @@ DeepTalk 0.3.1 requires one localized private shim for offline use. After verify
 version and expected face, VAD, and speaker-detector layouts, the adapter disables the redundant
 float-based video throttle, wall-clock face/track expiry, and wall-clock VAD reset. Voiceprints are
 explicitly disabled, their model is not acquired, and provenance reports speaker embeddings as
-unavailable. A changed version or required private field fails clearly instead of applying the shim
-speculatively. An explicitly configured InspireFace resource is hash-checked before native code
-receives it; models resolved through DeepTalk continue to use its hash-verifying model manager.
+unavailable. Before importing ONNX Runtime through DeepTalk, the adapter disables its telemetry by
+default unless the process explicitly configured a preference. A changed version or required
+private field fails clearly instead of applying the shim speculatively. An explicitly configured
+InspireFace resource is hash-checked before native code receives it; models resolved through
+DeepTalk continue to use its hash-verifying model manager.
 
 A CPU smoke test has exercised this complete boundary with the official DeepTalk-ASD 0.3.1 models
 and a 10.6-second H.264/AAC file containing one frontal speaker. It produced one stable face identity

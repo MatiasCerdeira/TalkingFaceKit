@@ -161,8 +161,45 @@ print(result.face_observations)
 print(result.speech_intervals)
 print(result.score_windows)
 print(result.provenance)
+print(result.audio_timeline_repairs)
 print(result.issues)
 ```
+
+Para probar distintos videos durante una demo sin editar código, la CLI imprime un resumen de
+rostros, intervalos VAD y scores crudos por ventana:
+
+```bash
+uv run --extra active-speaker-deeptalk python -m talkingfacekit analyze-video \
+  /ruta/al/video.mp4
+```
+
+También se puede limitar el análisis a un fragmento sobre la timeline original:
+
+```bash
+uv run --extra active-speaker-deeptalk python -m talkingfacekit analyze-video \
+  /ruta/al/video.mp4 \
+  --start-seconds 5 \
+  --end-seconds 15
+```
+
+Para inspeccionarlo visualmente durante una demo, `--report` genera una página HTML sincronizada que
+referencia el video original sin copiarlo ni recodificarlo:
+
+```bash
+uv run --extra active-speaker-deeptalk python -m talkingfacekit analyze-video \
+  /ruta/al/video.mp4 \
+  --report /ruta/al/reporte.html
+```
+
+Al abrir el HTML en el navegador, los boxes, IDs, scores crudos, estado de voz y cursor de la
+timeline siguen el tiempo del reproductor. El rostro con mayor score durante un intervalo de voz se
+marca como `top candidate`, nunca como probabilidad o decisión final. Hacer click en el gráfico
+mueve el video a ese instante. El archivo depende de que el video original continúe en la misma
+ruta; `--overwrite` permite reemplazar deliberadamente un reporte existente.
+
+La primera ejecución adquiere los modelos faltantes mediante el model manager de DeepTalk. El
+resumen es diagnóstico: muestra los valores LR-ASD sin convertirlos en probabilidades ni elegir un
+hablante final. La CLI oculta los logs internos del backend para que esa salida sea fácil de leer.
 
 El código de adaptación muestrea video a 25 Hz y convierte audio a mono PCM `int16` de 16 kHz dentro
 del boundary experimental. Usa únicamente tiempo de medio relativo para alimentar el detector y
@@ -170,6 +207,13 @@ devuelve todos los timestamps sobre la timeline fuente. Desactiva las expiracion
 del flujo offline, conserva sólo los frames visuales necesarios después de evaluar cada ventana y
 reporta audio/video incompletos mediante `issues`. Los intervalos VAD conservan si DeepTalk los
 confirmó, rechazó o si quedaron incompletos al llegar a EOF.
+
+Antes del resampling, el adapter normaliza el audio sobre una grilla de samples anclada al intervalo
+fuente. Los gaps de timestamps se rellenan con silencio y los samples solapados se recortan, siempre
+por streaming. Cada corrección queda visible en `audio_timeline_repairs` con tipo, intervalo, sample
+rate y cantidad de samples ajustados; `issues` incluye `audio_gap_filled` o
+`audio_overlap_trimmed`. La cuantización menor a un milisegundo se trata como jitter de timestamps y
+no genera una reparación.
 
 TalkingFaceKit adquiere mediante el model manager público de DeepTalk solamente los cinco assets que
 esta ruta usa: InspireFace, Silero VAD y los tres modelos LR-ASD. Los hashes del registry upstream se

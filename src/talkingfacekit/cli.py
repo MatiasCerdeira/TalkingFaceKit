@@ -1,12 +1,15 @@
 """Command-line workflows for TalkingFaceKit."""
 
 import argparse
+import logging
 from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
 import numpy as np
 
+from talkingfacekit.demo import render_active_speaker_report
+from talkingfacekit.integrations.deeptalk import DeepTalkAnalysisResult, analyze_sequence
 from talkingfacekit.io.landmarks import load_landmark_track, save_landmark_track
 from talkingfacekit.io.video import inspect_video_metadata
 from talkingfacekit.mesh import FaceMeshTrack
@@ -41,11 +44,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _inspect_landmarks(arguments)
         if command == "render-mesh":
             return _render_mesh(arguments)
+        if command == "analyze-video":
+            return _analyze_video(arguments)
     except (
         FileNotFoundError,
         FileExistsError,
         IsADirectoryError,
         ImportError,
+        RuntimeError,
         ValueError,
     ) as error:
         parser.exit(2, f"error: {error}\n")
@@ -134,6 +140,35 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Replace an existing output only after rendering completes.",
     )
+
+    analyze_parser = subparsers.add_parser(
+        "analyze-video",
+        help="Run experimental active-speaker analysis and print a diagnostic summary.",
+    )
+    analyze_parser.add_argument("video", type=Path, help="Local video file to analyze.")
+    analyze_parser.add_argument(
+        "--start-seconds",
+        type=float,
+        default=None,
+        help="Inclusive interval start on the source timeline; default: sequence start.",
+    )
+    analyze_parser.add_argument(
+        "--end-seconds",
+        type=float,
+        default=None,
+        help="Exclusive interval end on the source timeline; default: end of stream.",
+    )
+    analyze_parser.add_argument(
+        "--report",
+        type=Path,
+        default=None,
+        help="Write a synchronized diagnostic report to this .html file.",
+    )
+    analyze_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace an existing HTML report only after rendering completes.",
+    )
     return parser
 
 
@@ -193,6 +228,87 @@ def _render_mesh(arguments: argparse.Namespace) -> int:
     _print_mesh_summary(mesh)
     print(f"output: {saved_path}")
     return 0
+
+
+def _analyze_video(arguments: argparse.Namespace) -> int:
+    video_path = cast(Path, arguments.video)
+    start_seconds = cast(float | None, arguments.start_seconds)
+    end_seconds = cast(float | None, arguments.end_seconds)
+    report_path = cast(Path | None, arguments.report)
+    overwrite = cast(bool, arguments.overwrite)
+    if report_path is None and overwrite:
+        raise ValueError("--overwrite requires --report")
+
+    sequence = TalkingFaceSequence.from_video(video_path)
+    if start_seconds is not None or end_seconds is not None:
+        resolved_start_seconds = sequence.start_seconds if start_seconds is None else start_seconds
+        sequence = sequence.clip(resolved_start_seconds, end_seconds)
+
+    previous_logging_disable_level = logging.root.manager.disable
+    logging.disable(logging.CRITICAL)
+    try:
+        result = analyze_sequence(sequence)
+    finally:
+        logging.disable(previous_logging_disable_level)
+    _print_active_speaker_summary(sequence, result)
+    if report_path is not None:
+        saved_path = render_active_speaker_report(
+            sequence,
+            result,
+            report_path,
+            overwrite=overwrite,
+        )
+        print(f"report: {saved_path}")
+    return 0
+
+
+def _print_active_speaker_summary(
+    sequence: TalkingFaceSequence,
+    result: DeepTalkAnalysisResult,
+) -> None:
+    face_ids = sorted({observation.face_id for observation in result.face_observations})
+    interval_end = "EOF" if sequence.end_seconds is None else f"{sequence.end_seconds:.3f}"
+
+    print(f"video: {sequence.source.path}")
+    print(f"interval: [{sequence.start_seconds:.3f}, {interval_end}) seconds")
+    print(f"backend: DeepTalk-ASD {result.provenance.backend_version}")
+    print(f"face IDs: {face_ids if face_ids else 'none'}")
+    print(f"face observations: {len(result.face_observations)}")
+
+    print("speech intervals:")
+    if not result.speech_intervals:
+        print("  none")
+    for interval in result.speech_intervals:
+        print(
+            f"  [{interval.source_start_seconds:.3f}, "
+            f"{interval.source_end_seconds:.3f}) {interval.status}"
+        )
+
+    print("raw active-speaker scores:")
+    if not result.score_windows:
+        print("  none")
+    for window in result.score_windows:
+        scores = ", ".join(
+            f"face_{face_id}={score:+.3f}" for face_id, score in sorted(window.raw_scores.items())
+        )
+        print(
+            f"  [{window.source_start_seconds:.3f}, "
+            f"{window.source_end_seconds:.3f}) {scores or 'no face scores'}"
+        )
+
+    print("audio timeline repairs:")
+    if not result.audio_timeline_repairs:
+        print("  none")
+    for repair in result.audio_timeline_repairs:
+        action = "filled silence" if repair.kind == "audio_gap_filled" else "trimmed overlap"
+        print(
+            f"  [{repair.source_start_seconds:.3f}, "
+            f"{repair.source_end_seconds:.3f}) {action} "
+            f"({repair.duration_seconds:.3f} seconds)"
+        )
+
+    print(f"issues: {', '.join(result.issues) if result.issues else 'none'}")
+    print("note: raw scores are not probabilities or final speaking decisions")
 
 
 def _print_summary(track: FaceLandmarkTrack) -> None:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 from collections import defaultdict
+from collections.abc import Iterator
 from importlib import import_module
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -204,6 +206,41 @@ def test_reports_and_trims_video_after_open_ended_audio_coverage(
     assert result.face_observations == ()
 
 
+def test_propagates_audio_timeline_repairs_as_structured_results_and_issues(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    detector = FakeDetector()
+    install_fake_pipeline(
+        monkeypatch,
+        detector,
+        video_events=[(0.0, "face-start")],
+        audio_events=[(0.5, "audio-end")],
+    )
+    expected_repair = deeptalk.DeepTalkAudioTimelineRepair(
+        kind="audio_gap_filled",
+        source_start_seconds=10.1,
+        source_end_seconds=10.2,
+        adjusted_sample_count=4_800,
+        sample_rate_hz=48_000,
+    )
+
+    def fake_audio_events(
+        sequence: TalkingFaceSequence,
+        module: ModuleType,
+        repairs: list[deeptalk.DeepTalkAudioTimelineRepair],
+    ) -> Iterator[tuple[float, object]]:
+        del sequence, module
+        repairs.append(expected_repair)
+        return iter([(0.5, "audio-end")])
+
+    monkeypatch.setattr(deeptalk, "_iter_deeptalk_audio_frames", fake_audio_events)
+
+    result = deeptalk.analyze_sequence(make_sequence(start_seconds=10.0, end_seconds=10.5))
+
+    assert result.audio_timeline_repairs == (expected_repair,)
+    assert result.issues == ("audio_gap_filled",)
+
+
 def test_prunes_completed_visual_windows_but_keeps_the_shared_boundary() -> None:
     speaker = SimpleNamespace(
         video_buffer={
@@ -290,6 +327,28 @@ def test_detector_creation_does_not_acquire_the_disabled_voiceprint_model(
         "model_dir": str(tmp_path),
         "voiceprint_model_name": "disabled-by-talkingfacekit",
     }
+
+
+def test_disables_onnx_telemetry_before_import_unless_explicitly_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    imported_module = ModuleType("deeptalk_asd")
+    observed_values: list[str | None] = []
+
+    def fake_import_module(name: str) -> ModuleType:
+        assert name == "deeptalk_asd"
+        observed_values.append(os.environ.get("ORT_DISABLE_TELEMETRY"))
+        return imported_module
+
+    monkeypatch.delenv("ORT_DISABLE_TELEMETRY", raising=False)
+    monkeypatch.setattr(deeptalk, "import_module", fake_import_module)
+
+    assert deeptalk._load_deeptalk_module() is imported_module
+    assert observed_values == ["1"]
+
+    monkeypatch.setenv("ORT_DISABLE_TELEMETRY", "0")
+    assert deeptalk._load_deeptalk_module() is imported_module
+    assert observed_values == ["1", "0"]
 
 
 def test_rejects_a_sequence_without_audio_before_constructing_deeptalk(

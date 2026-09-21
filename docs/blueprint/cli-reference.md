@@ -11,11 +11,30 @@ reproducible y segura frente a overwrite.
   fallos de procesamiento parcial.
 - Errores concisos en stderr; resultados y summaries en stdout.
 - `--overwrite` requerido para reemplazar archivos.
-- Ningún comando descarga modelos salvo un futuro comando de assets explícito y opt-in.
+- `analyze-video` puede adquirir los modelos DeepTalk faltantes en su primera ejecución; los demás
+  comandos no descargan modelos.
 - Los intervalos usan `[start_seconds, end_seconds)`.
 - Configuración efectiva y versions se conservan en el artefacto de salida.
 
 ## Comandos disponibles
+
+### `analyze-video`
+
+```text
+uv run --extra active-speaker-deeptalk python -m talkingfacekit analyze-video VIDEO \
+  [--start-seconds S] \
+  [--end-seconds S] \
+  [--report OUTPUT.html] \
+  [--overwrite]
+```
+
+Ejecuta el adapter experimental DeepTalk-ASD sobre el video completo o un intervalo y muestra un
+resumen humano de face IDs, observaciones, intervalos VAD, `raw_score` por ventana, provenance e
+issues. También enumera gaps rellenados y overlaps recortados durante la normalización temporal del
+audio. Los scores se preservan sin presentarlos como probabilidades ni decisiones finales.
+`--report` escribe una página offline que referencia el video original y sincroniza boxes, scores,
+VAD, reparaciones y timeline con el reproductor. El reporte es demo-only y `--overwrite` es
+obligatorio para reemplazar uno existente.
 
 ### `extract-landmarks`
 
@@ -73,7 +92,7 @@ talkingfacekit
 
 No se implementará el árbol de una vez. Cada subcomando llega junto con su API, contrato y tests.
 
-## `analyze-video` — objetivo prioritario
+## `analyze-video` — expansión prioritaria
 
 ```text
 talkingfacekit analyze-video INPUT \
@@ -87,10 +106,10 @@ talkingfacekit analyze-video INPUT \
   [--overwrite]
 ```
 
-La primera versión muestra speech intervals, face IDs/boxes, `raw_score`, segmentos candidatos,
-rechazados o inciertos, razones y provenance. `camera_facing` y `av_sync` aparecen como
-`not_evaluated` hasta implementar sus backends. El comando no debe presentar scores LR-ASD como
-probabilities ni elegir siempre un rostro.
+La versión diagnóstica disponible ya muestra speech intervals, face IDs y `raw_score`. La expansión
+siguiente agrega boxes persistidos, segmentos candidatos, rechazados o inciertos, razones y
+provenance completo. `camera_facing` y `av_sync` aparecen como `not_evaluated` hasta implementar sus
+backends. El comando no debe presentar scores LR-ASD como probabilities ni elegir siempre un rostro.
 
 El JSON es la salida canónica. El overlay es diagnóstico y debe representar exactamente ese mismo
 reporte. Los nombres y flags finales se fijarán junto con la API Python, no antes.
