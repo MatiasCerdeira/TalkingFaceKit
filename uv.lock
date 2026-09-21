@@ -2,28 +2,17 @@ version = 1
 revision = 3
 requires-python = ">=3.11, <3.13"
 resolution-markers = [
-    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra == 'extra-14-talkingfacekit-tracking-mediapipe'",
-    "python_full_version >= '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra == 'extra-14-talkingfacekit-tracking-mediapipe'",
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra == 'extra-14-talkingfacekit-tracking-mediapipe') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra != 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra == 'extra-14-talkingfacekit-tracking-mediapipe')",
-    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra == 'extra-14-talkingfacekit-tracking-mediapipe'",
-    "python_full_version < '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra == 'extra-14-talkingfacekit-tracking-mediapipe'",
-    "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra == 'extra-14-talkingfacekit-tracking-mediapipe') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra != 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra == 'extra-14-talkingfacekit-tracking-mediapipe')",
-    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra != 'extra-14-talkingfacekit-tracking-mediapipe'",
-    "python_full_version >= '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra != 'extra-14-talkingfacekit-tracking-mediapipe'",
-    "python_full_version >= '3.12' and sys_platform == 'win32' and extra == 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra != 'extra-14-talkingfacekit-tracking-mediapipe'",
-    "python_full_version >= '3.12' and sys_platform == 'emscripten' and extra == 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra != 'extra-14-talkingfacekit-tracking-mediapipe'",
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra == 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra != 'extra-14-talkingfacekit-tracking-mediapipe') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra != 'extra-14-talkingfacekit-tracking-mediapipe')",
-    "python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra != 'extra-14-talkingfacekit-tracking-mediapipe'",
-    "python_full_version < '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra != 'extra-14-talkingfacekit-tracking-mediapipe'",
-    "python_full_version < '3.12' and sys_platform == 'win32' and extra == 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra != 'extra-14-talkingfacekit-tracking-mediapipe'",
-    "python_full_version < '3.12' and sys_platform == 'emscripten' and extra == 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra != 'extra-14-talkingfacekit-tracking-mediapipe'",
-    "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra == 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra != 'extra-14-talkingfacekit-tracking-mediapipe') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra != 'extra-14-talkingfacekit-tracking-mediapipe')",
-    "extra != 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra != 'extra-14-talkingfacekit-tracking-mediapipe'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin'",
+    "python_full_version >= '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux'",
+    "python_full_version >= '3.12' and sys_platform == 'win32'",
+    "python_full_version >= '3.12' and sys_platform == 'emscripten'",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "python_full_version < '3.12' and sys_platform == 'darwin'",
+    "python_full_version < '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux'",
+    "python_full_version < '3.12' and sys_platform == 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten'",
+    "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
 ]
-conflicts = [[
-    { package = "talkingfacekit", extra = "active-speaker-deeptalk" },
-    { package = "talkingfacekit", extra = "tracking-mediapipe" },
-]]
 
 [[package]]
 name = "absl-py"
@@ -595,7 +584,7 @@ version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ast-serialize" },
-    { name = "librt", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra == 'extra-14-talkingfacekit-tracking-mediapipe')" },
+    { name = "librt", marker = "platform_python_implementation != 'PyPy'" },
     { name = "mypy-extensions" },
     { name = "pathspec" },
     { name = "typing-extensions" },
@@ -866,7 +855,7 @@ name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-14-talkingfacekit-active-speaker-deeptalk' and extra == 'extra-14-talkingfacekit-tracking-mediapipe')" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
     { name = "iniconfig" },
     { name = "packaging" },
     { name = "pluggy" },

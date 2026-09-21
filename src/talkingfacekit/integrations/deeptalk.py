@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import math
+import os
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from importlib import metadata
+from hashlib import sha256
+from importlib import import_module, metadata
 from itertools import chain
 from numbers import Real
+from pathlib import Path
 from types import MappingProxyType, ModuleType
 from typing import Any, Literal, cast
 
@@ -30,9 +33,12 @@ _AUDIO_FRAME_SAMPLE_COUNT = 480
 _AUDIO_TIMESTAMP_TOLERANCE_SECONDS = 1e-3
 _AUDIO_SAMPLE_COUNT_TOLERANCE = 1e-7
 _SCORE_WINDOW_SECONDS = 1.0
+_INSPIREFACE_RESOURCE_ENV = "INSPIREFACE_RESOURCE_PATH"
+_INSPIREFACE_RESOURCE_SHA256 = "5037ba1f49905b783a1c973d5d58b834a645922cc2814c8e3ca630a38dc24431"
 
 _EventKind = Literal["video", "audio"]
 _DeepTalkEvent = tuple[_EventKind, float, object]
+_SpeechIntervalStatus = Literal["confirmed", "rejected", "incomplete"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +58,22 @@ class DeepTalkFaceObservation:
     source_timestamp_seconds: float
     face_id: int
     bounding_box_xywh: tuple[float, float, float, float]
+
+    def __post_init__(self) -> None:
+        """Validate the copied source timestamp, identity, and pixel rectangle."""
+        if not math.isfinite(self.source_timestamp_seconds) or self.source_timestamp_seconds < 0:
+            raise ValueError(
+                "source_timestamp_seconds must be finite and non-negative, "
+                f"got {self.source_timestamp_seconds}"
+            )
+        if isinstance(self.face_id, bool) or not isinstance(self.face_id, int):
+            raise TypeError(f"face_id must be an integer, got {type(self.face_id).__name__}")
+        if len(self.bounding_box_xywh) != 4 or not all(
+            math.isfinite(value) for value in self.bounding_box_xywh
+        ):
+            raise ValueError("bounding_box_xywh must contain four finite pixel values")
+        if self.bounding_box_xywh[2] <= 0 or self.bounding_box_xywh[3] <= 0:
+            raise ValueError("bounding_box_xywh width and height must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,8 +100,76 @@ class DeepTalkScoreWindow:
     raw_scores: Mapping[int, float]
 
     def __post_init__(self) -> None:
-        """Snapshot scores so mutable DeepTalk dictionaries cannot leak into the result."""
-        object.__setattr__(self, "raw_scores", MappingProxyType(dict(self.raw_scores)))
+        """Validate the window and snapshot mutable DeepTalk score dictionaries."""
+        if not math.isfinite(self.source_start_seconds) or self.source_start_seconds < 0:
+            raise ValueError("source_start_seconds must be finite and non-negative")
+        if (
+            not math.isfinite(self.source_end_seconds)
+            or self.source_end_seconds <= self.source_start_seconds
+        ):
+            raise ValueError("source_end_seconds must be finite and after source_start_seconds")
+
+        copied_scores: dict[int, float] = {}
+        for face_id, score in self.raw_scores.items():
+            if isinstance(face_id, bool) or not isinstance(face_id, int):
+                raise TypeError("raw score face IDs must be integers")
+            if not math.isfinite(score):
+                raise ValueError(f"raw score for face {face_id} must be finite, got {score}")
+            copied_scores[face_id] = score
+        object.__setattr__(self, "raw_scores", MappingProxyType(copied_scores))
+
+
+@dataclass(frozen=True, slots=True)
+class DeepTalkSpeechInterval:
+    """Record one DeepTalk VAD interval on the source-media timeline.
+
+    Parameters
+    ----------
+    source_start_seconds
+        Inclusive source-media start in seconds, including DeepTalk's retained prefix audio.
+    source_end_seconds
+        Exclusive source-media end in seconds.
+    status
+        Whether DeepTalk confirmed, rejected, or reached EOF during the interval.
+    """
+
+    source_start_seconds: float
+    source_end_seconds: float
+    status: _SpeechIntervalStatus
+
+    def __post_init__(self) -> None:
+        """Validate source-timeline bounds and the copied VAD status."""
+        if not math.isfinite(self.source_start_seconds) or self.source_start_seconds < 0:
+            raise ValueError("source_start_seconds must be finite and non-negative")
+        if (
+            not math.isfinite(self.source_end_seconds)
+            or self.source_end_seconds <= self.source_start_seconds
+        ):
+            raise ValueError("source_end_seconds must be finite and after source_start_seconds")
+        if self.status not in {"confirmed", "rejected", "incomplete"}:
+            raise ValueError(f"unsupported DeepTalk speech interval status: {self.status}")
+
+
+@dataclass(frozen=True, slots=True)
+class DeepTalkAnalysisProvenance:
+    """Describe the fixed DeepTalk media transformation and optional capabilities.
+
+    Parameters
+    ----------
+    backend_version
+        Installed ``deeptalk-asd`` distribution version.
+    video_sample_rate_hz
+        Video grid submitted to the backend.
+    audio_sample_rate_hz
+        Mono signed-16-bit PCM rate submitted to the backend.
+    speaker_embeddings_available
+        Always false for this adapter because voiceprints are deliberately disabled.
+    """
+
+    backend_version: str
+    video_sample_rate_hz: int = _VIDEO_FPS
+    audio_sample_rate_hz: int = _AUDIO_SAMPLE_RATE_HZ
+    speaker_embeddings_available: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,12 +180,21 @@ class DeepTalkAnalysisResult:
     ----------
     face_observations
         Observed identities and bounding boxes at submitted 25 Hz video slots.
+    speech_intervals
+        Completed, rejected, and EOF-truncated VAD intervals on the source timeline.
     score_windows
         Consecutive source-timeline windows containing unchanged DeepTalk scores.
+    provenance
+        Backend version, fixed media rates, and optional capability status.
+    issues
+        Immutable diagnostic codes for non-fatal source coverage limitations.
     """
 
     face_observations: tuple[DeepTalkFaceObservation, ...]
+    speech_intervals: tuple[DeepTalkSpeechInterval, ...]
     score_windows: tuple[DeepTalkScoreWindow, ...]
+    provenance: DeepTalkAnalysisProvenance
+    issues: tuple[str, ...] = ()
 
 
 def analyze_sequence(sequence: TalkingFaceSequence) -> DeepTalkAnalysisResult:
@@ -115,7 +214,7 @@ def analyze_sequence(sequence: TalkingFaceSequence) -> DeepTalkAnalysisResult:
     Returns
     -------
     DeepTalkAnalysisResult
-        Backend-owned objects copied into immutable face observations and raw score windows.
+        Backend-owned objects copied into immutable face, speech, score, and provenance values.
 
     Raises
     ------
@@ -130,8 +229,9 @@ def analyze_sequence(sequence: TalkingFaceSequence) -> DeepTalkAnalysisResult:
 
     Notes
     -----
-    Detector construction may resolve DeepTalk's model assets through its public factory. Normal
-    unit tests replace that boundary and do not download or run models.
+    Detector construction resolves only the required face, VAD, and LR-ASD assets through
+    DeepTalk's hash-verifying public model manager. Normal unit tests replace that boundary and do
+    not download or run models.
     """
     if not isinstance(sequence, TalkingFaceSequence):
         raise TypeError(f"sequence must be a TalkingFaceSequence, got {type(sequence).__name__}")
@@ -144,14 +244,19 @@ def analyze_sequence(sequence: TalkingFaceSequence) -> DeepTalkAnalysisResult:
     audio_events = _iter_deeptalk_audio_frames(sequence, deeptalk_module)
 
     face_observations: list[DeepTalkFaceObservation] = []
+    speech_intervals: list[DeepTalkSpeechInterval] = []
     score_windows: list[DeepTalkScoreWindow] = []
+    issues: list[str] = []
     next_window_start_seconds = 0.0
     next_window_end_seconds = _SCORE_WINDOW_SECONDS
     final_audio_end_seconds: float | None = None
+    final_video_timestamp_seconds: float | None = None
+    latest_utterance: object | None = None
     backend = cast(Any, detector)  # DeepTalk 0.3.1 does not publish typing metadata.
 
     for event_kind, event_time_seconds, payload in _merge_av_events(video_events, audio_events):
         if event_kind == "video":
+            final_video_timestamp_seconds = event_time_seconds
             profiles = backend.append_video(payload, create_time=event_time_seconds)
             face_observations.extend(
                 _copy_face_observations(
@@ -161,17 +266,25 @@ def analyze_sequence(sequence: TalkingFaceSequence) -> DeepTalkAnalysisResult:
             )
             continue
 
-        backend.append_audio(payload, create_time=event_time_seconds)
+        latest_utterance = backend.append_audio(payload, create_time=event_time_seconds)
+        completed_interval = _copy_speech_interval(
+            latest_utterance,
+            source_offset_seconds=sequence.start_seconds,
+            relative_end_seconds=event_time_seconds,
+            include_incomplete=False,
+        )
+        if completed_interval is not None:
+            speech_intervals.append(completed_interval)
         final_audio_end_seconds = event_time_seconds
         while next_window_end_seconds <= event_time_seconds + _VIDEO_TIMESTAMP_TOLERANCE_SECONDS:
-            score_windows.append(
-                _evaluate_score_window(
-                    backend,
-                    source_offset_seconds=sequence.start_seconds,
-                    start_seconds=next_window_start_seconds,
-                    end_seconds=next_window_end_seconds,
-                )
+            score_window = _evaluate_score_window(
+                backend,
+                source_offset_seconds=sequence.start_seconds,
+                start_seconds=next_window_start_seconds,
+                end_seconds=next_window_end_seconds,
             )
+            score_windows.append(score_window)
+            _prune_deeptalk_video_buffer(backend, before_seconds=next_window_end_seconds)
             next_window_start_seconds = next_window_end_seconds
             next_window_end_seconds += _SCORE_WINDOW_SECONDS
 
@@ -190,19 +303,52 @@ def analyze_sequence(sequence: TalkingFaceSequence) -> DeepTalkAnalysisResult:
             f"sequence_end={sequence.start_seconds + analysis_end_seconds}"
         )
 
+    if final_video_timestamp_seconds is None:
+        issues.append("no_video_frames")
+    elif sequence.duration_seconds is None:
+        video_coverage_end_seconds = final_video_timestamp_seconds + _FRAME_PERIOD_SECONDS
+        if (
+            final_audio_end_seconds + _AUDIO_TIMESTAMP_TOLERANCE_SECONDS
+            < video_coverage_end_seconds
+        ):
+            issues.append("audio_ended_before_video")
+            maximum_source_timestamp = sequence.start_seconds + final_audio_end_seconds
+            face_observations = [
+                observation
+                for observation in face_observations
+                if observation.source_timestamp_seconds
+                <= maximum_source_timestamp + _VIDEO_TIMESTAMP_TOLERANCE_SECONDS
+            ]
+        elif video_coverage_end_seconds + _FRAME_PERIOD_SECONDS < final_audio_end_seconds:
+            issues.append("video_ended_before_audio")
+
+    incomplete_interval = _copy_speech_interval(
+        latest_utterance,
+        source_offset_seconds=sequence.start_seconds,
+        relative_end_seconds=final_audio_end_seconds,
+        include_incomplete=True,
+    )
+    if incomplete_interval is not None:
+        speech_intervals.append(incomplete_interval)
+
     if next_window_start_seconds < analysis_end_seconds - _VIDEO_TIMESTAMP_TOLERANCE_SECONDS:
-        score_windows.append(
-            _evaluate_score_window(
-                backend,
-                source_offset_seconds=sequence.start_seconds,
-                start_seconds=next_window_start_seconds,
-                end_seconds=analysis_end_seconds,
-            )
+        score_window = _evaluate_score_window(
+            backend,
+            source_offset_seconds=sequence.start_seconds,
+            start_seconds=next_window_start_seconds,
+            end_seconds=analysis_end_seconds,
         )
+        score_windows.append(score_window)
+        _prune_deeptalk_video_buffer(backend, before_seconds=analysis_end_seconds)
 
     return DeepTalkAnalysisResult(
         face_observations=tuple(face_observations),
+        speech_intervals=tuple(speech_intervals),
         score_windows=tuple(score_windows),
+        provenance=DeepTalkAnalysisProvenance(
+            backend_version=_DEEPTALK_SUPPORTED_VERSION,
+        ),
+        issues=tuple(issues),
     )
 
 
@@ -486,22 +632,65 @@ def _merge_av_events(
 
 def _load_deeptalk_module() -> ModuleType:
     try:
-        import deeptalk_asd  # type: ignore[import-untyped]
+        deeptalk_asd = import_module("deeptalk_asd")
     except ModuleNotFoundError as error:
         raise RuntimeError(
             "DeepTalk analysis requires the 'active-speaker-deeptalk' extra"
         ) from error
-    return cast(ModuleType, deeptalk_asd)
+    return deeptalk_asd
 
 
 def _create_deeptalk_detector(deeptalk_module: ModuleType) -> object:
     _require_supported_deeptalk_version()
     backend = cast(Any, deeptalk_module)
-    detector = backend.ASDDetectorFactory().create()
+    explicit_face_resource = _validate_explicit_inspireface_resource()
+    model_cache_dir = Path(backend.get_model_cache_dir())
+    face_resource = explicit_face_resource or Path(backend.ensure_model("Pikachu", model_cache_dir))
+    for model_name in (
+        "silero_vad.onnx",
+        "audio_frontend.onnx",
+        "visual_frontend.onnx",
+        "av_backend.onnx",
+    ):
+        backend.ensure_model(model_name, model_cache_dir)
+
+    detector = backend.ASDDetectorFactory(
+        face_detector={"type": "inspireface", "model_dir": str(face_resource)},
+        turn_detector={"type": "silero-vad", "model_dir": str(model_cache_dir)},
+        speaker_detector={
+            "type": "LR-ASD-ONNX",
+            "model_dir": str(model_cache_dir),
+            "voiceprint_model_name": "disabled-by-talkingfacekit",
+        },
+    ).create()
     if detector is None:
         raise RuntimeError("DeepTalk-ASD failed to create its detector")
     _configure_deeptalk_0_3_1_for_offline(detector)
     return cast(object, detector)
+
+
+def _validate_explicit_inspireface_resource() -> Path | None:
+    """Validate DeepTalk's default InspireFace asset before native code receives it."""
+    configured_path = os.environ.get(_INSPIREFACE_RESOURCE_ENV)
+    if configured_path is None:
+        return None
+
+    resource_path = Path(configured_path)
+    if not resource_path.is_file():
+        raise RuntimeError(
+            f"{_INSPIREFACE_RESOURCE_ENV} must name the DeepTalk Pikachu model file: "
+            f"{resource_path}"
+        )
+
+    digest = sha256()
+    with resource_path.open("rb") as resource_file:
+        for chunk in iter(lambda: resource_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != _INSPIREFACE_RESOURCE_SHA256:
+        raise RuntimeError(
+            f"{_INSPIREFACE_RESOURCE_ENV} does not match the supported DeepTalk Pikachu model hash"
+        )
+    return resource_path
 
 
 def _require_supported_deeptalk_version() -> None:
@@ -516,11 +705,12 @@ def _require_supported_deeptalk_version() -> None:
 
 
 def _configure_deeptalk_0_3_1_for_offline(detector: object) -> None:
-    """Disable two DeepTalk 0.3.1 realtime assumptions for deterministic offline input.
+    """Disable DeepTalk 0.3.1 realtime assumptions for deterministic offline input.
 
     DeepTalk otherwise drops some exact 25 Hz frames through a second float-based throttle and
-    immediately expires tracks by comparing relative media timestamps with ``perf_counter()``.
-    Every dependency on its private layout is validated and contained in this function.
+    expires tracks and VAD state according to wall-clock time. Voiceprints are also disabled so the
+    optional native Sherpa linkage cannot silently change score semantics. Every dependency on the
+    private layout is validated and contained in this function.
     """
     _require_supported_deeptalk_version()
 
@@ -538,13 +728,44 @@ def _configure_deeptalk_0_3_1_for_offline(detector: object) -> None:
         raise RuntimeError(
             "DeepTalk 0.3.1 detector structure changed: expected LRASDOnnxSpeakerDetector"
         )
+    face_detector = getattr(detector, "_face_detector", None)
+    face_type = type(face_detector)
+    if (
+        face_type.__module__ != "deeptalk_asd.face_detector.inspireface_detector"
+        or face_type.__name__ != "InspireFaceDetector"
+    ):
+        raise RuntimeError(
+            "DeepTalk 0.3.1 detector structure changed: expected InspireFaceDetector"
+        )
+    turn_detector = getattr(detector, "_turn_detector", None)
+    turn_type = type(turn_detector)
+    if (
+        turn_type.__module__ != "deeptalk_asd.turn_detector.silero_vad_turn_detector"
+        or turn_type.__name__ != "SileroVadTurnDetector"
+    ):
+        raise RuntimeError(
+            "DeepTalk 0.3.1 detector structure changed: expected SileroVadTurnDetector"
+        )
+    vad = getattr(turn_detector, "_vad", None)
+    vad_type = type(vad)
+    if (
+        vad_type.__module__ != "deeptalk_asd.turn_detector.vad.silero_vad"
+        or vad_type.__name__ != "SileroVAD"
+    ):
+        raise RuntimeError("DeepTalk 0.3.1 detector structure changed: expected SileroVAD")
 
     backend = cast(Any, speaker_detector)
+    face_backend = cast(Any, face_detector)
+    vad_backend = cast(Any, vad)
     try:
         video_frame_rate = backend.video_frame_rate
         audio_sample_rate = backend.audio_sample_rate
         minimum_frame_interval = backend._min_frame_interval
         _max_track_age = backend.max_track_age
+        voice_extractor = backend.voice_extractor
+        voice_profiles = backend.voice_profiles
+        _last_reset_time = vad_backend._last_reset_time
+        remove_stale_faces = face_backend._remove_stale_faces
     except AttributeError as error:
         raise RuntimeError(
             f"DeepTalk 0.3.1 detector structure changed: missing {error.name}"
@@ -564,9 +785,93 @@ def _configure_deeptalk_0_3_1_for_offline(detector: object) -> None:
         abs_tol=_VIDEO_TIMESTAMP_TOLERANCE_SECONDS,
     ):
         raise RuntimeError("DeepTalk 0.3.1 _min_frame_interval has an unexpected value")
+    if voice_extractor is not None and not hasattr(voice_extractor, "extract_from_samples"):
+        raise RuntimeError("DeepTalk 0.3.1 voice_extractor has an unexpected structure")
+    if not isinstance(voice_profiles, dict):
+        raise TypeError("DeepTalk 0.3.1 voice_profiles has an unexpected structure")
+    if not callable(remove_stale_faces):
+        raise TypeError("DeepTalk 0.3.1 face expiry hook has an unexpected structure")
 
     backend._min_frame_interval = 0.0
     backend.max_track_age = math.inf
+    backend.voice_extractor = None
+    backend.voice_profiles.clear()
+    vad_backend._last_reset_time = math.inf
+    face_backend._remove_stale_faces = lambda: None
+
+    face_module = import_module(face_type.__module__)
+    face_module_backend = cast(Any, face_module)
+    disappearance_interval = getattr(face_module, "FACE_DISAPPEARANCE_INTERVAL_SECONDS", None)
+    if isinstance(disappearance_interval, bool) or not isinstance(disappearance_interval, Real):
+        raise TypeError("DeepTalk 0.3.1 face disappearance interval has an unexpected value")
+    face_module_backend.FACE_DISAPPEARANCE_INTERVAL_SECONDS = 0
+
+
+def _copy_speech_interval(
+    utterance: object | None,
+    *,
+    source_offset_seconds: float,
+    relative_end_seconds: float,
+    include_incomplete: bool,
+) -> DeepTalkSpeechInterval | None:
+    """Copy a terminal or EOF-truncated DeepTalk utterance without retaining audio frames."""
+    if utterance is None:
+        return None
+
+    state_name = getattr(getattr(utterance, "turn_state", None), "name", None)
+    if not isinstance(state_name, str):
+        raise TypeError("DeepTalk utterance does not expose a named turn_state")
+    terminal_statuses: dict[str, _SpeechIntervalStatus] = {
+        "TURN_END": "confirmed",
+        "TURN_REJECTED": "rejected",
+    }
+    active_states = {"TURN_START", "TURN_CONTINUE", "TURN_CONFIRMED", "TURN_SILENCE"}
+    if include_incomplete:
+        if state_name not in active_states:
+            return None
+        interval_status: _SpeechIntervalStatus = "incomplete"
+    else:
+        terminal_status = terminal_statuses.get(state_name)
+        if terminal_status is None:
+            return None
+        interval_status = terminal_status
+
+    duration_method = getattr(utterance, "duration_seconds", None)
+    if not callable(duration_method):
+        raise TypeError("DeepTalk utterance does not expose duration_seconds()")
+    duration_seconds = float(duration_method())
+    if not math.isfinite(duration_seconds) or duration_seconds <= 0:
+        raise RuntimeError(f"DeepTalk returned an invalid utterance duration: {duration_seconds}")
+
+    source_end_seconds = source_offset_seconds + relative_end_seconds
+    source_start_seconds = max(source_offset_seconds, source_end_seconds - duration_seconds)
+    if source_end_seconds <= source_start_seconds:
+        return None
+    return DeepTalkSpeechInterval(
+        source_start_seconds=source_start_seconds,
+        source_end_seconds=source_end_seconds,
+        status=interval_status,
+    )
+
+
+def _prune_deeptalk_video_buffer(backend: Any, *, before_seconds: float) -> None:
+    """Discard mouth images older than completed score windows."""
+    speaker_detector = getattr(backend, "_speaker_detector", None)
+    if speaker_detector is None:
+        return
+    video_buffer = getattr(speaker_detector, "video_buffer", None)
+    if not isinstance(video_buffer, dict):
+        raise TypeError("DeepTalk 0.3.1 video_buffer has an unexpected structure")
+
+    for face_id, frames in list(video_buffer.items()):
+        retained_frames: list[Any] = []
+        for frame_record in cast(list[Any], frames):
+            if not isinstance(frame_record, tuple) or len(frame_record) != 2:
+                raise RuntimeError("DeepTalk 0.3.1 video buffer record has an unexpected structure")
+            timestamp_seconds = float(frame_record[1])
+            if timestamp_seconds + _VIDEO_TIMESTAMP_TOLERANCE_SECONDS >= before_seconds:
+                retained_frames.append(frame_record)
+        video_buffer[face_id] = retained_frames
 
 
 def _copy_face_observations(

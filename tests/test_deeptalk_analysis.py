@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from importlib import import_module
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -42,9 +44,19 @@ class FakeDetector:
         self.operation_log.append(("video", create_time))
         return [self.profile] if frame in {"face-start", "face-end"} else []
 
-    def append_audio(self, frame: object, *, create_time: float) -> None:
-        del frame
+    def append_audio(self, frame: object, *, create_time: float) -> object | None:
         self.operation_log.append(("audio", create_time))
+        if frame == "speech-end":
+            return SimpleNamespace(
+                turn_state=SimpleNamespace(name="TURN_END"),
+                duration_seconds=lambda: 0.5,
+            )
+        if frame == "speech-open":
+            return SimpleNamespace(
+                turn_state=SimpleNamespace(name="TURN_CONFIRMED"),
+                duration_seconds=lambda: 0.2,
+            )
+        return None
 
     def evaluate(self, start_time: float, end_time: float) -> dict[int, float]:
         self.evaluate_calls.append((start_time, end_time))
@@ -118,6 +130,10 @@ def test_analyzes_one_sequence_on_a_single_source_relative_timeline(
     assert result.score_windows[-1].source_end_seconds == pytest.approx(20.0)
     assert result.score_windows[0].raw_scores == {}
     assert result.score_windows[1].raw_scores == {7: 1.75}
+    assert result.speech_intervals == ()
+    assert result.provenance.backend_version == "0.3.1"
+    assert result.provenance.speaker_embeddings_available is False
+    assert result.issues == ()
 
     detector.rectangle.x = 999.0
     detector.mutable_scores[7] = 999.0
@@ -144,6 +160,138 @@ def test_keeps_a_final_partial_score_window(monkeypatch: pytest.MonkeyPatch) -> 
     assert result.score_windows[0].raw_scores == {}
 
 
+@pytest.mark.parametrize(
+    ("audio_payload", "expected_status"),
+    [("speech-end", "confirmed"), ("speech-open", "incomplete")],
+)
+def test_copies_vad_intervals_without_retaining_backend_frames(
+    monkeypatch: pytest.MonkeyPatch,
+    audio_payload: str,
+    expected_status: str,
+) -> None:
+    detector = FakeDetector()
+    install_fake_pipeline(
+        monkeypatch,
+        detector,
+        video_events=[(0.0, "face-start")],
+        audio_events=[(0.5, audio_payload)],
+    )
+
+    result = deeptalk.analyze_sequence(make_sequence(start_seconds=10.0, end_seconds=10.5))
+
+    assert len(result.speech_intervals) == 1
+    interval = result.speech_intervals[0]
+    assert interval.source_end_seconds == pytest.approx(10.5)
+    assert interval.status == expected_status
+    expected_start = 10.0 if expected_status == "confirmed" else 10.3
+    assert interval.source_start_seconds == pytest.approx(expected_start)
+
+
+def test_reports_and_trims_video_after_open_ended_audio_coverage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    detector = FakeDetector()
+    install_fake_pipeline(
+        monkeypatch,
+        detector,
+        video_events=[(1.0, "face-start")],
+        audio_events=[(0.5, "audio-end")],
+    )
+
+    result = deeptalk.analyze_sequence(make_sequence(start_seconds=10.0, end_seconds=None))
+
+    assert result.issues == ("audio_ended_before_video",)
+    assert result.face_observations == ()
+
+
+def test_prunes_completed_visual_windows_but_keeps_the_shared_boundary() -> None:
+    speaker = SimpleNamespace(
+        video_buffer={
+            3: [("old", 0.96), ("boundary", 1.0), ("future", 1.04)],
+        }
+    )
+    detector = SimpleNamespace(_speaker_detector=speaker)
+
+    deeptalk._prune_deeptalk_video_buffer(detector, before_seconds=1.0)
+
+    assert speaker.video_buffer == {3: [("boundary", 1.0), ("future", 1.04)]}
+
+
+def test_rejects_non_finite_copied_backend_values() -> None:
+    with pytest.raises(ValueError, match="raw score for face 3 must be finite"):
+        deeptalk.DeepTalkScoreWindow(
+            source_start_seconds=0.0,
+            source_end_seconds=1.0,
+            raw_scores={3: float("nan")},
+        )
+
+    with pytest.raises(ValueError, match="width and height must be positive"):
+        deeptalk.DeepTalkFaceObservation(
+            source_timestamp_seconds=0.0,
+            face_id=3,
+            bounding_box_xywh=(0.0, 0.0, 0.0, 10.0),
+        )
+
+
+def test_rejects_invalid_explicit_inspireface_resource(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    invalid_resource = tmp_path / "Pikachu"
+    invalid_resource.write_bytes(b"not an InspireFace resource")
+    monkeypatch.setenv("INSPIREFACE_RESOURCE_PATH", str(invalid_resource))
+
+    with pytest.raises(RuntimeError, match="does not match the supported DeepTalk Pikachu"):
+        deeptalk._validate_explicit_inspireface_resource()
+
+
+def test_detector_creation_does_not_acquire_the_disabled_voiceprint_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requested_models: list[str] = []
+    factory_arguments: dict[str, object] = {}
+    expected_detector = object()
+
+    def ensure_model(model_name: str, cache_dir: Path) -> Path:
+        assert cache_dir == tmp_path
+        requested_models.append(model_name)
+        return cache_dir / model_name
+
+    class FakeFactory:
+        def __init__(self, **kwargs: object) -> None:
+            factory_arguments.update(kwargs)
+
+        def create(self) -> object:
+            return expected_detector
+
+    module = ModuleType("fake_deeptalk")
+    module.get_model_cache_dir = lambda: tmp_path  # type: ignore[attr-defined]
+    module.ensure_model = ensure_model  # type: ignore[attr-defined]
+    module.ASDDetectorFactory = FakeFactory  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        "talkingfacekit.integrations.deeptalk.metadata.version",
+        lambda _: "0.3.1",
+    )
+    monkeypatch.setattr(deeptalk, "_configure_deeptalk_0_3_1_for_offline", lambda _: None)
+
+    detector = deeptalk._create_deeptalk_detector(module)
+
+    assert detector is expected_detector
+    assert requested_models == [
+        "Pikachu",
+        "silero_vad.onnx",
+        "audio_frontend.onnx",
+        "visual_frontend.onnx",
+        "av_backend.onnx",
+    ]
+    assert factory_arguments["speaker_detector"] == {
+        "type": "LR-ASD-ONNX",
+        "model_dir": str(tmp_path),
+        "voiceprint_model_name": "disabled-by-talkingfacekit",
+    }
+
+
 def test_rejects_a_sequence_without_audio_before_constructing_deeptalk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -162,16 +310,30 @@ def test_offline_shim_keeps_every_exact_25hz_slot_without_wall_clock_expiry(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     pytest.importorskip("deeptalk_asd")
-    from deeptalk_asd.asd import ASD  # type: ignore[import-untyped]
-    from deeptalk_asd.speaker_detector.interface import (  # type: ignore[import-untyped]
-        FaceData,
+    ASD = cast(Any, import_module("deeptalk_asd.asd").ASD)
+    FaceData = cast(Any, import_module("deeptalk_asd.speaker_detector.interface").FaceData)
+    LRASDOnnxSpeakerDetector = cast(
+        Any,
+        import_module("deeptalk_asd.speaker_detector.lrasd_onnx").LRASDOnnxSpeakerDetector,
     )
-    from deeptalk_asd.speaker_detector.lrasd_onnx import (  # type: ignore[import-untyped]
-        LRASDOnnxSpeakerDetector,
+    InspireFaceDetector = cast(
+        Any,
+        import_module("deeptalk_asd.face_detector.inspireface_detector").InspireFaceDetector,
+    )
+    SileroVadTurnDetector = cast(
+        Any,
+        import_module("deeptalk_asd.turn_detector.silero_vad_turn_detector").SileroVadTurnDetector,
+    )
+    SileroVAD = cast(
+        Any,
+        import_module("deeptalk_asd.turn_detector.vad.silero_vad").SileroVAD,
     )
 
     detector = ASD.__new__(ASD)
     speaker = LRASDOnnxSpeakerDetector.__new__(LRASDOnnxSpeakerDetector)
+    face_detector = InspireFaceDetector.__new__(InspireFaceDetector)
+    turn_detector = SileroVadTurnDetector.__new__(SileroVadTurnDetector)
+    vad = SileroVAD.__new__(SileroVAD)
     speaker.video_frame_rate = 25
     speaker.audio_sample_rate = 16_000
     speaker._min_frame_interval = 1 / 25
@@ -179,9 +341,15 @@ def test_offline_shim_keeps_every_exact_25hz_slot_without_wall_clock_expiry(
     speaker.last_face_timestamps = {}
     speaker.video_buffer = defaultdict(list)
     speaker.voice_profiles = {}
+    speaker.voice_extractor = None
     speaker.max_track_age = 5.0
     speaker._extract_mouth_image = lambda _: np.zeros((112, 112), dtype=np.uint8)
+    face_detector._remove_stale_faces = lambda: None
+    vad._last_reset_time = 0.0
+    turn_detector._vad = vad
     detector._speaker_detector = speaker
+    detector._face_detector = face_detector
+    detector._turn_detector = turn_detector
     face = FaceData(
         id=3,
         face_image=np.zeros((4, 4, 3), dtype=np.uint8),
@@ -197,6 +365,8 @@ def test_offline_shim_keeps_every_exact_25hz_slot_without_wall_clock_expiry(
 
     assert speaker._min_frame_interval == 0.0
     assert speaker.max_track_age == float("inf")
+    assert speaker.voice_extractor is None
+    assert vad._last_reset_time == float("inf")
     assert [timestamp for _, timestamp in speaker.video_buffer[3]] == [
         0.0,
         0.04,

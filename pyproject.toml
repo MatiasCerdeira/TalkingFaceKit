@@ -31,14 +31,6 @@ dev = [
     "ruff>=0.16.2",
 ]
 
-[tool.uv]
-conflicts = [
-    [
-        { extra = "active-speaker-deeptalk" },
-        { extra = "tracking-mediapipe" },
-    ],
-]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

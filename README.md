@@ -146,9 +146,9 @@ El primer adapter offline de hablante activo se instala mediante su extra opcion
 uv sync --extra active-speaker-deeptalk
 ```
 
-El adapter prepara una sola secuencia para DeepTalk y copia observaciones de rostros y ventanas
-diagnósticas con los scores finales devueltos por el backend, sin convertirlos en probabilidades ni
-decisiones de speaking:
+El adapter prepara una sola secuencia para DeepTalk y copia observaciones de rostros, intervalos VAD
+y ventanas diagnósticas con los scores finales devueltos por el backend, sin convertirlos en
+probabilidades ni decisiones finales de speaking:
 
 ```python
 from talkingfacekit import TalkingFaceSequence
@@ -158,18 +158,30 @@ sequence = TalkingFaceSequence.from_video("conversation.mp4")
 result = analyze_sequence(sequence)
 
 print(result.face_observations)
+print(result.speech_intervals)
 print(result.score_windows)
+print(result.provenance)
+print(result.issues)
 ```
 
 El código de adaptación muestrea video a 25 Hz y convierte audio a mono PCM `int16` de 16 kHz dentro
 del boundary experimental. Usa únicamente tiempo de medio relativo para alimentar el detector y
-devuelve todos los timestamps sobre la timeline fuente. Además de los tests sintéticos, esta ruta
-se validó en CPU con DeepTalk-ASD 0.3.1 y sus modelos oficiales sobre un MP4 H.264/AAC de 10,6
-segundos con una sola persona frontal. El smoke test obtuvo una identidad estable y scores finitos;
-no evalúa todavía precisión, calibración ni escenas con varias personas. DeepTalk administra sus
-propios modelos al construir el detector y los guarda fuera del repositorio; TalkingFaceKit no los
-incluye. Su extractor opcional de voiceprints permanece desactivado sin `sherpa-onnx`, que no forma
-parte del extra y no fue necesario para ejecutar VAD, tracking y LR-ASD.
+devuelve todos los timestamps sobre la timeline fuente. Desactiva las expiraciones por wall clock
+del flujo offline, conserva sólo los frames visuales necesarios después de evaluar cada ventana y
+reporta audio/video incompletos mediante `issues`. Los intervalos VAD conservan si DeepTalk los
+confirmó, rechazó o si quedaron incompletos al llegar a EOF.
+
+TalkingFaceKit adquiere mediante el model manager público de DeepTalk solamente los cinco assets que
+esta ruta usa: InspireFace, Silero VAD y los tres modelos LR-ASD. Los hashes del registry upstream se
+verifican y los archivos quedan fuera del repositorio. El modelo de voiceprints no se adquiere y los
+speaker embeddings se desactivan deliberadamente para que el fallo de linkage de `sherpa-onnx` en
+macOS no cambie silenciosamente los scores. `result.provenance` registra esa capacidad como no
+disponible.
+
+Además de los tests sintéticos, esta ruta se validó en CPU con DeepTalk-ASD 0.3.1 y sus modelos
+oficiales sobre un MP4 H.264/AAC de 10,6 segundos con una sola persona frontal. El smoke test obtuvo
+una identidad estable y scores finitos; no evalúa todavía precisión, calibración ni escenas con
+varias personas.
 
 El test con modelos y video reales es explícitamente opt-in y se omite en la suite normal:
 
@@ -188,6 +200,17 @@ Landmarker. MediaPipe se instala por separado porque no es necesario para inspec
 ```bash
 uv sync --extra tracking-mediapipe
 ```
+
+Ambos backends pueden instalarse para usarlos en etapas diferentes del mismo proceso:
+
+```bash
+uv sync --extra active-speaker-deeptalk --extra tracking-mediapipe
+```
+
+DeepTalk declara `opencv-python` y MediaPipe declara `opencv-contrib-python`; el lock los fija en la
+misma versión de OpenCV y la suite combinada verifica que `cv2`, DeepTalk y MediaPipe se importen en
+el mismo entorno. Esta convivencia sigue siendo una restricción del packaging upstream y debe
+revalidarse al actualizar cualquiera de los dos backends.
 
 TalkingFaceKit no descarga ni incluye modelos. El usuario debe proporcionar un modelo compatible
 de Face Landmarker en formato `.task`:

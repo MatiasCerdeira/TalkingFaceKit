@@ -45,7 +45,7 @@ Base disponible: source timeline + video frames + MediaPipe landmarks/mesh
 1. audio con timestamps de fuente                  [completo]
                               |
                               v
-2. adapter experimental DeepTalk-ASD
+2. adapter experimental DeepTalk-ASD                   [implementado]
                               |
                               v
 3. reporte + overlay de un video
@@ -154,7 +154,7 @@ Los tests verifican timestamps e índices fuente, límites con precisión de sam
 PCM entero mono, normalización, ausencia de audio e intervalos vacíos. El productor no retiene la
 pista completa.
 
-## Entrega 2 — adapter experimental DeepTalk-ASD
+## Entrega 2 — adapter experimental DeepTalk-ASD, implementada
 
 ### Resultado de usuario
 

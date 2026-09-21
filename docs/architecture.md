@@ -191,24 +191,39 @@ Both streams use relative media time (`source_time - sequence.start_seconds`) on
 adapter. Audio timestamps identify each chunk's exclusive end. A lazy two-way merge feeds video
 before audio on exact ties, with no realtime playback, clock, thread, or wall-clock timestamp.
 DeepTalk is evaluated incrementally in roughly one-second windows before its ten-second audio buffer
-can evict earlier samples. Results are copied into immutable integration-specific observations and
-score windows on the original source timeline; no DeepTalk profiles, images, or embeddings escape.
+can evict earlier samples. After each evaluation, mouth images older than the completed window are
+pruned while a frame exactly on the shared boundary is retained. Results are copied into immutable,
+validated integration-specific face observations, VAD intervals, score windows, provenance, and
+diagnostic issue codes on the original source timeline; no DeepTalk profiles, images, audio frames,
+or embeddings escape. Open-ended sequences report unequal A/V coverage and do not retain face
+observations after audio coverage ends.
+
 The stored window bounds are consecutive, but DeepTalk 0.3.1 internally uses an inclusive end for
 video while audio remains half-open. A video frame exactly on a boundary may therefore contribute
 to both adjacent backend evaluations; the adapter does not distort timestamps to conceal this.
 
 DeepTalk 0.3.1 requires one localized private shim for offline use. After verifying the installed
-version and expected internal speaker-detector layout, the adapter disables only its redundant
-float-based video throttle and wall-clock track expiry. A changed version or required private field
-fails clearly instead of applying the shim speculatively.
+version and expected face, VAD, and speaker-detector layouts, the adapter disables the redundant
+float-based video throttle, wall-clock face/track expiry, and wall-clock VAD reset. Voiceprints are
+explicitly disabled, their model is not acquired, and provenance reports speaker embeddings as
+unavailable. A changed version or required private field fails clearly instead of applying the shim
+speculatively. An explicitly configured InspireFace resource is hash-checked before native code
+receives it; models resolved through DeepTalk continue to use its hash-verifying model manager.
 
 A CPU smoke test has exercised this complete boundary with the official DeepTalk-ASD 0.3.1 models
 and a 10.6-second H.264/AAC file containing one frontal speaker. It produced one stable face identity
 and finite scores while preserving the observed A/V timeline. This validates runtime execution and
-wiring, not model accuracy, score calibration, long-input memory behavior, or multi-person tracking.
-DeepTalk's optional WeSpeaker voiceprint extractor does not initialize without `sherpa-onnx`; that
-dependency is intentionally absent because the VAD, face tracking, and LR-ASD path does not require
-it for this MVP.
+wiring, not model accuracy, score calibration, or multi-person tracking. DeepTalk still declares
+`sherpa-onnx` as a package dependency, but this adapter neither acquires the WeSpeaker model nor
+initializes its extractor because voiceprints are outside this MVP and have broken native linkage on
+the tested macOS host.
+
+DeepTalk and MediaPipe may be installed together for sequential pipeline stages. Their upstream
+metadata installs `opencv-python` and `opencv-contrib-python` respectively; the lock keeps both on
+the same OpenCV version, and a combined optional-backend test imports `cv2`, DeepTalk, and MediaPipe
+in one environment. This is an upstream packaging constraint to revalidate on backend upgrades, not
+a reason to merge their responsibilities: DeepTalk supplies active-speaker evidence while MediaPipe
+continues to supply the exportable 478-point landmark topology.
 
 `DecodedAudioChunk` establishes the shared audio-streaming contract:
 
@@ -315,6 +330,7 @@ must be documented here before becoming public contracts.
 | Single-video analysis before collection    | Validates the result model and client value before generalizing folder and batch orchestration.         |
 | DeepTalk-ASD as experimental ASD backend   | Reuses a working face/VAD/LR-ASD pipeline while keeping its limitations outside the core.               |
 | Offline source-time DeepTalk scheduling    | Keeps A/V deterministic without presenting media timestamps as realtime wall-clock values.             |
+| DeepTalk and MediaPipe coexistence         | Allows active-speaker and dense-landmark stages in one environment while versions remain tested.        |
 | TalkingFaceKit-owned segment policy        | Backend scores are evidence, not calibrated probabilities or final segment decisions.                  |
 | Separate visual-quality and sync stages    | MediaPipe pose and SyncNet offset answer different questions from active-speaker attribution.           |
 
