@@ -167,7 +167,10 @@ def _build_parser() -> argparse.ArgumentParser:
     analyze_parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="Replace an existing HTML report only after rendering completes.",
+        help=(
+            "Replace an existing HTML report; otherwise an existing destination gets a numbered "
+            "sibling."
+        ),
     )
     return parser
 
@@ -252,14 +255,28 @@ def _analyze_video(arguments: argparse.Namespace) -> int:
         logging.disable(previous_logging_disable_level)
     _print_active_speaker_summary(sequence, result)
     if report_path is not None:
+        resolved_report_path = _available_report_path(report_path, overwrite=overwrite)
         saved_path = render_active_speaker_report(
             sequence,
             result,
-            report_path,
+            resolved_report_path,
             overwrite=overwrite,
         )
         print(f"report: {saved_path}")
     return 0
+
+
+def _available_report_path(path: Path, *, overwrite: bool) -> Path:
+    """Return the requested report path or the first available numbered sibling."""
+    if overwrite or not path.is_file():
+        return path
+
+    version = 2
+    while True:
+        candidate = path.with_name(f"{path.stem}-{version}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+        version += 1
 
 
 def _print_active_speaker_summary(
@@ -296,6 +313,39 @@ def _print_active_speaker_summary(
             f"{window.source_end_seconds:.3f}) {scores or 'no face scores'}"
         )
 
+    print("preliminary segments:")
+    if not result.preliminary_segments:
+        print("  none")
+    for segment in result.preliminary_segments:
+        face = "none" if segment.face_id is None else f"face_{segment.face_id}"
+        reasons = ",".join(segment.reason_codes)
+        print(
+            f"  [{segment.source_start_seconds:.3f}, "
+            f"{segment.source_end_seconds:.3f}) {segment.status} "
+            f"{face} ({reasons})"
+        )
+
+    policy = result.candidate_policy
+    print("continuous candidate runs:")
+    print(
+        "  policy: "
+        f"minimum_duration={policy.minimum_duration_seconds:.3f}s, "
+        f"minimum_face_coverage={policy.minimum_face_coverage:.1%}, "
+        f"maximum_face_gap={policy.maximum_face_gap_seconds:.3f}s"
+    )
+    if not result.candidate_runs:
+        print("  none")
+    for run in result.candidate_runs:
+        reasons = ",".join(run.reason_codes)
+        print(
+            f"  [{run.source_start_seconds:.3f}, {run.source_end_seconds:.3f}) "
+            f"{run.status} face_{run.face_id} duration={run.duration_seconds:.3f}s "
+            f"coverage={run.face_visibility_fraction:.1%} "
+            f"max_gap={run.maximum_face_gap_seconds:.3f}s "
+            f"score[min/mean/max]={run.raw_score_min:+.3f}/"
+            f"{run.raw_score_mean:+.3f}/{run.raw_score_max:+.3f} ({reasons})"
+        )
+
     print("audio timeline repairs:")
     if not result.audio_timeline_repairs:
         print("  none")
@@ -308,7 +358,7 @@ def _print_active_speaker_summary(
         )
 
     print(f"issues: {', '.join(result.issues) if result.issues else 'none'}")
-    print("note: raw scores are not probabilities or final speaking decisions")
+    print("note: structurally passing candidates are not yet accepted training segments")
 
 
 def _print_summary(track: FaceLandmarkTrack) -> None:

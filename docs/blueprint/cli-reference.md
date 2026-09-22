@@ -29,12 +29,13 @@ uv run --extra active-speaker-deeptalk python -m talkingfacekit analyze-video VI
 ```
 
 Ejecuta el adapter experimental DeepTalk-ASD sobre el video completo o un intervalo y muestra un
-resumen humano de face IDs, observaciones, intervalos VAD, `raw_score` por ventana, provenance e
-issues. También enumera gaps rellenados y overlaps recortados durante la normalización temporal del
-audio. Los scores se preservan sin presentarlos como probabilidades ni decisiones finales.
-`--report` escribe una página offline que referencia el video original y sincroniza boxes, scores,
-VAD, reparaciones y timeline con el reproductor. El reporte es demo-only y `--overwrite` es
-obligatorio para reemplazar uno existente.
+resumen humano de face IDs, observaciones, intervalos VAD, `raw_score` por ventana, decisiones
+preliminares con razones, provenance e issues. También enumera gaps rellenados y overlaps recortados
+durante la normalización temporal del audio. Los scores se preservan sin presentarlos como
+probabilidades ni decisiones finales. `--report` escribe una página offline que referencia el video
+original y sincroniza boxes, pose/calidad crudas, scores, decisiones preliminares, VAD, reparaciones
+y timeline con el reproductor. El reporte es demo-only y `--overwrite` es obligatorio para
+reemplazar uno existente.
 
 ### `extract-landmarks`
 
@@ -106,10 +107,14 @@ talkingfacekit analyze-video INPUT \
   [--overwrite]
 ```
 
-La versión diagnóstica disponible ya muestra speech intervals, face IDs y `raw_score`. La expansión
-siguiente agrega boxes persistidos, segmentos candidatos, rechazados o inciertos, razones y
-provenance completo. `camera_facing` y `av_sync` aparecen como `not_evaluated` hasta implementar sus
-backends. El comando no debe presentar scores LR-ASD como probabilities ni elegir siempre un rostro.
+La versión diagnóstica disponible muestra speech intervals, face IDs, pose/calidad crudas,
+`raw_score` y segmentos preliminares `candidate`, `rejected` o `uncertain` con razones. Un candidato
+preliminar se combina con sus vecinos contiguos de la misma identidad. La salida también muestra
+cada run resultante, su duración, cobertura de detecciones, mayor hueco visual y score
+mínimo/medio/máximo. La política inicial (2 s, 90% de cobertura y 200 ms de hueco máximo) es
+conservadora pero todavía no calibrada. Incluso un run que la pasa no es un segmento aceptado:
+`camera_facing`, calidad visual, score calibrado y `av_sync` siguen sin evaluarse. El comando no debe
+presentar scores LR-ASD como probabilities ni elegir siempre un rostro.
 
 El JSON es la salida canónica. El overlay es diagnóstico y debe representar exactamente ese mismo
 reporte. Los nombres y flags finales se fijarán junto con la API Python, no antes.

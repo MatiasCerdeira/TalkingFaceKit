@@ -146,9 +146,10 @@ El primer adapter offline de hablante activo se instala mediante su extra opcion
 uv sync --extra active-speaker-deeptalk
 ```
 
-El adapter prepara una sola secuencia para DeepTalk y copia observaciones de rostros, intervalos VAD
-y ventanas diagnósticas con los scores finales devueltos por el backend, sin convertirlos en
-probabilidades ni decisiones finales de speaking:
+El adapter prepara una sola secuencia para DeepTalk y copia observaciones de rostros —incluidos
+bounding box, pose cruda `yaw/pitch/roll` en grados y score crudo de calidad—, intervalos VAD y
+ventanas diagnósticas con los scores finales devueltos por el backend, sin convertirlos en
+probabilidades ni decisiones finales de speaking o suitability visual:
 
 ```python
 from talkingfacekit import TalkingFaceSequence
@@ -160,6 +161,7 @@ result = analyze_sequence(sequence)
 print(result.face_observations)
 print(result.speech_intervals)
 print(result.score_windows)
+print(result.preliminary_segments)
 print(result.provenance)
 print(result.audio_timeline_repairs)
 print(result.issues)
@@ -191,11 +193,37 @@ uv run --extra active-speaker-deeptalk python -m talkingfacekit analyze-video \
   --report /ruta/al/reporte.html
 ```
 
-Al abrir el HTML en el navegador, los boxes, IDs, scores crudos, estado de voz y cursor de la
-timeline siguen el tiempo del reproductor. El rostro con mayor score durante un intervalo de voz se
-marca como `top candidate`, nunca como probabilidad o decisión final. Hacer click en el gráfico
-mueve el video a ese instante. El archivo depende de que el video original continúe en la misma
-ruta; `--overwrite` permite reemplazar deliberadamente un reporte existente.
+Al abrir el HTML en el navegador, los boxes, IDs, pose, calidad, scores crudos, estado de voz y
+cursor de la timeline siguen el tiempo del reproductor. El rostro con mayor score durante un
+intervalo de voz se marca como `top candidate`, nunca como probabilidad o decisión final. Los
+ángulos y la calidad también se muestran como evidencia cruda, todavía sin thresholds de
+aceptación. Hacer click en el gráfico mueve el video a ese instante. El archivo depende de que el
+video original continúe en la misma ruta. El panel **Decisiones por segmento** muestra
+`CONSERVAR`, `DESCARTAR` o `REVISAR`, resume las razones y métricas, y permite saltar al comienzo de
+cada región con un click. Si el destino ya existe, la CLI crea automáticamente un hermano numerado
+como `reporte-2.html`; `--overwrite` permite reemplazar deliberadamente el nombre solicitado.
+
+El resultado también contiene una primera clasificación conservadora por subintervalo:
+
+- `rejected` cuando no hay habla, no se observa una cara, aparecen varias caras, cambia la
+  identidad dentro de la ventana o el único rostro tiene score no positivo;
+- `uncertain` cuando hay voz y un único rostro, pero DeepTalk no devolvió su score;
+- `candidate` únicamente cuando hay voz, se observa una sola identidad y su score crudo es
+  positivo.
+
+Cada segmento incluye razones machine-readable, los IDs observados y el score sin modificar. Un
+`candidate` preliminar no es todavía un clip aceptado. Los candidatos adyacentes de la misma
+identidad se unen luego en `candidate_runs` continuos. Cada run mide duración, cobertura de
+detecciones a 25 Hz, mayor hueco sin rostro y score crudo mínimo/promedio temporal/máximo. La
+política inicial
+exige al menos 2 segundos, 90% de cobertura y ningún hueco visual mayor a 200 ms; un run que falla
+queda preservado como `rejected` con razones explícitas. Estos valores son puntos de partida
+conservadores, no thresholds calibrados.
+
+Incluso un run que pasa esta etapa sigue sin ser un clip aceptado: faltan calibración del score,
+pose, calidad visual y sincronización. La regla positiva sólo conserva candidatos para esas etapas;
+no presenta `raw_score > 0` como garantía final. La CLI y el HTML muestran tanto el segmento
+preliminar como el resultado estructural continuo para que la demo permita entender cada rechazo.
 
 La primera ejecución adquiere los modelos faltantes mediante el model manager de DeepTalk. El
 resumen es diagnóstico: muestra los valores LR-ASD sin convertirlos en probabilidades ni elegir un

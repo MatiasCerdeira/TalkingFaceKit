@@ -45,6 +45,10 @@ VideoSource + source interval
        candidate / rejected / uncertain + reasons
                          |
                          v
+             continuous same-face run policy
+       duration + face coverage + maximum gap
+                         |
+                         v
               JSON report + diagnostic overlay
 ```
 
@@ -194,10 +198,12 @@ receives continuous PCM without hiding changes to the source timeline.
 The optional demo report lives under `talkingfacekit.demo`, outside the core and stable rendering
 surface. It serializes copied DeepTalk observations into one offline HTML document and references
 the unchanged local video by file URL. Browser playback time is the only synchronization clock for
-boxes, VAD state, raw scores, repair markers, and the diagnostic timeline. The report labels the
-largest score during speech as a `top candidate`; it does not add a threshold, probability, or
-active-speaker decision. This isolation allows the demo UI to be removed or replaced without
-changing core contracts or the DeepTalk adapter.
+boxes, pose, raw quality, VAD state, raw scores, preliminary decisions, continuous candidate-run
+decisions, repair markers, and the diagnostic timeline. The report labels the largest score during
+speech as a `top candidate`; it does not add a probability or accepted training-segment decision.
+It also derives a clickable review list from the same immutable evidence, labelling regions as
+`CONSERVAR`, `DESCARTAR`, or `REVISAR` for the current policy stage. This isolation allows the demo
+UI to be removed or replaced without changing core contracts or the DeepTalk adapter.
 
 Both streams use relative media time (`source_time - sequence.start_seconds`) only inside the
 adapter. Audio timestamps identify each chunk's exclusive end. A lazy two-way merge feeds video
@@ -207,8 +213,25 @@ can evict earlier samples. After each evaluation, mouth images older than the co
 pruned while a frame exactly on the shared boundary is retained. Results are copied into immutable,
 validated integration-specific face observations, VAD intervals, score windows, provenance, and
 diagnostic issue codes on the original source timeline; no DeepTalk profiles, images, audio frames,
-or embeddings escape. Open-ended sequences report unequal A/V coverage and do not retain face
-observations after audio coverage ends.
+or embeddings escape. A face observation preserves the bounding box, raw InspireFace head pose in
+degrees, and raw InspireFace quality score. Those values are diagnostic evidence rather than a
+camera-facing or visual-suitability decision. Open-ended sequences report unequal A/V coverage and
+do not retain face observations after audio coverage ends.
+
+The first TalkingFaceKit-owned policy is deliberately pre-calibration and remains represented by
+integration-specific immutable values while DeepTalk is the only evaluated backend. It splits score
+windows at active VAD boundaries and rejects regions with no speech, no visible face, simultaneous
+faces, changing face identity, or a non-positive raw score. A missing score for one visible face is
+uncertain. One visible identity with a positive raw score is only a `candidate`; it is not accepted
+until later stages pass. Adjacent preliminary candidates for the same identity are merged into
+continuous `DeepTalkCandidateRun` values. The first structural policy measures duration, detection
+coverage against the 25 Hz grid, the largest interval without a face detection, and raw-score
+min/mean/max. Initial defaults require two seconds, 90% coverage, and no visibility gap above 200
+milliseconds. They are explicit conservative starting values rather than calibrated guarantees;
+failed runs stay in the result with stable reason codes. Even a passing run still requires
+calibrated-score, pose, quality, and synchronization decisions. Every stage retains reason codes and
+raw evidence so its thresholds can be replaced after evaluation without rewriting or hiding backend
+output.
 
 The stored window bounds are consecutive, but DeepTalk 0.3.1 internally uses an inclusive end for
 video while audio remains half-open. A video frame exactly on a boundary may therefore contribute

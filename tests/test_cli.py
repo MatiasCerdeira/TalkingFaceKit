@@ -16,7 +16,10 @@ from talkingfacekit.integrations.deeptalk import (
     DeepTalkAnalysisProvenance,
     DeepTalkAnalysisResult,
     DeepTalkAudioTimelineRepair,
+    DeepTalkCandidatePolicy,
+    DeepTalkCandidateRun,
     DeepTalkFaceObservation,
+    DeepTalkPreliminarySegment,
     DeepTalkScoreWindow,
     DeepTalkSpeechInterval,
 )
@@ -274,6 +277,8 @@ def test_analyzes_active_speakers_and_prints_a_readable_summary(
                 source_timestamp_seconds=0.5,
                 face_id=7,
                 bounding_box_xywh=(10.0, 20.0, 30.0, 40.0),
+                head_pose_yaw_pitch_roll_degrees=(5.0, -2.0, 1.0),
+                raw_face_quality_score=0.9,
             ),
         ),
         speech_intervals=(
@@ -301,6 +306,35 @@ def test_analyzes_active_speakers_and_prints_a_readable_summary(
             ),
         ),
         issues=("audio_gap_filled",),
+        preliminary_segments=(
+            DeepTalkPreliminarySegment(
+                source_start_seconds=0.6,
+                source_end_seconds=1.4,
+                status="candidate",
+                face_id=7,
+                reason_codes=("single_visible_face", "positive_raw_active_speaker_score"),
+                visible_face_ids=(7,),
+                raw_score=1.25,
+            ),
+        ),
+        candidate_policy=DeepTalkCandidatePolicy(minimum_duration_seconds=0.5),
+        candidate_runs=(
+            DeepTalkCandidateRun(
+                source_start_seconds=0.6,
+                source_end_seconds=1.4,
+                status="candidate",
+                face_id=7,
+                reason_codes=("structural_policy_passed",),
+                preliminary_segment_count=1,
+                face_observation_count=20,
+                expected_face_observation_count=20,
+                face_visibility_fraction=1.0,
+                maximum_face_gap_seconds=0.04,
+                raw_score_min=1.25,
+                raw_score_mean=1.25,
+                raw_score_max=1.25,
+            ),
+        ),
     )
 
     def fake_analyze_sequence(sequence: TalkingFaceSequence) -> DeepTalkAnalysisResult:
@@ -349,9 +383,18 @@ def test_analyzes_active_speakers_and_prints_a_readable_summary(
     assert "face IDs: [7]" in output
     assert "[0.600, 1.400) confirmed" in output
     assert "face_7=+1.250, face_9=-0.500" in output
+    assert (
+        "[0.600, 1.400) candidate face_7 "
+        "(single_visible_face,positive_raw_active_speaker_score)" in output
+    )
+    assert (
+        "[0.600, 1.400) candidate face_7 duration=0.800s "
+        "coverage=100.0% max_gap=0.040s score[min/mean/max]=+1.250/+1.250/+1.250 "
+        "(structural_policy_passed)" in output
+    )
     assert "[0.700, 0.710) filled silence (0.010 seconds)" in output
     assert "issues: audio_gap_filled" in output
-    assert "raw scores are not probabilities" in output
+    assert "structurally passing candidates are not yet accepted training segments" in output
     assert f"report: {report_path}" in output
 
 
@@ -363,3 +406,14 @@ def test_rejects_report_overwrite_without_a_report_path(
 
     assert exit_info.value.code == 2
     assert "--overwrite requires --report" in capsys.readouterr().err
+
+
+def test_versions_an_existing_report_unless_overwrite_is_requested(tmp_path: Path) -> None:
+    requested_path = tmp_path / "active-speaker.html"
+    requested_path.write_text("first", encoding="utf-8")
+    (tmp_path / "active-speaker-2.html").write_text("second", encoding="utf-8")
+
+    assert cli._available_report_path(requested_path, overwrite=False) == (
+        tmp_path / "active-speaker-3.html"
+    )
+    assert cli._available_report_path(requested_path, overwrite=True) == requested_path

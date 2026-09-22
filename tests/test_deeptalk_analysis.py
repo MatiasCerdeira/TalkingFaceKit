@@ -39,6 +39,8 @@ class FakeDetector:
         self.profile = SimpleNamespace(
             id=7,
             face_rectangle=self.rectangle,
+            head_pose=SimpleNamespace(yaw=8.0, pitch=-3.5, roll=1.25),
+            face_image_score=0.875,
         )
         self.mutable_scores = {7: 1.75}
 
@@ -127,6 +129,8 @@ def test_analyzes_one_sequence_on_a_single_source_relative_timeline(
     ]
     assert [observation.face_id for observation in result.face_observations] == [7, 7]
     assert result.face_observations[0].bounding_box_xywh == (1.0, 2.0, 30.0, 40.0)
+    assert result.face_observations[0].head_pose_yaw_pitch_roll_degrees == (8.0, -3.5, 1.25)
+    assert result.face_observations[0].raw_face_quality_score == 0.875
     assert len(result.score_windows) == 10
     assert result.score_windows[0].source_start_seconds == pytest.approx(10.0)
     assert result.score_windows[-1].source_end_seconds == pytest.approx(20.0)
@@ -138,8 +142,12 @@ def test_analyzes_one_sequence_on_a_single_source_relative_timeline(
     assert result.issues == ()
 
     detector.rectangle.x = 999.0
+    detector.profile.head_pose.yaw = 999.0
+    detector.profile.face_image_score = 999.0
     detector.mutable_scores[7] = 999.0
     assert result.face_observations[0].bounding_box_xywh[0] == 1.0
+    assert result.face_observations[0].head_pose_yaw_pitch_roll_degrees[0] == 8.0
+    assert result.face_observations[0].raw_face_quality_score == 0.875
     assert result.score_windows[1].raw_scores[7] == 1.75
 
 
@@ -267,6 +275,26 @@ def test_rejects_non_finite_copied_backend_values() -> None:
             source_timestamp_seconds=0.0,
             face_id=3,
             bounding_box_xywh=(0.0, 0.0, 0.0, 10.0),
+            head_pose_yaw_pitch_roll_degrees=(0.0, 0.0, 0.0),
+            raw_face_quality_score=0.5,
+        )
+
+    with pytest.raises(ValueError, match="three finite degree values"):
+        deeptalk.DeepTalkFaceObservation(
+            source_timestamp_seconds=0.0,
+            face_id=3,
+            bounding_box_xywh=(0.0, 0.0, 10.0, 10.0),
+            head_pose_yaw_pitch_roll_degrees=(float("nan"), 0.0, 0.0),
+            raw_face_quality_score=0.5,
+        )
+
+    with pytest.raises(ValueError, match="raw_face_quality_score must be finite"):
+        deeptalk.DeepTalkFaceObservation(
+            source_timestamp_seconds=0.0,
+            face_id=3,
+            bounding_box_xywh=(0.0, 0.0, 10.0, 10.0),
+            head_pose_yaw_pitch_roll_degrees=(0.0, 0.0, 0.0),
+            raw_face_quality_score=float("inf"),
         )
 
 

@@ -28,8 +28,11 @@ _REPORT_TEMPLATE = r"""<!doctype html>
       --muted: #a7b0bc;
       --line: #353c46;
       --candidate: #f4ba43;
+      --keep: #42c68a;
       --speech: #42c68a;
       --repair: #d474f2;
+      --rejected: #f06a6a;
+      --uncertain: #9aa7b8;
     }
     * { box-sizing: border-box; }
     body {
@@ -97,6 +100,18 @@ _REPORT_TEMPLATE = r"""<!doctype html>
     }
     .candidate strong { display: block; margin-bottom: 4px; font-size: 14px; }
     .candidate span { color: var(--muted); font-size: 12px; line-height: 1.4; }
+    .candidate.rejected {
+      border-left-color: var(--rejected);
+      background: rgb(240 106 106 / 10%);
+    }
+    .candidate.keep {
+      border-left-color: var(--keep);
+      background: rgb(66 198 138 / 10%);
+    }
+    .candidate.uncertain {
+      border-left-color: var(--uncertain);
+      background: rgb(154 167 184 / 10%);
+    }
     .score-row {
       display: grid;
       grid-template-columns: 10px 1fr auto;
@@ -125,12 +140,52 @@ _REPORT_TEMPLATE = r"""<!doctype html>
     .legend-line { width: 15px; height: 3px; border-radius: 2px; }
     #timeline { display: block; width: 100%; height: 190px; touch-action: manipulation; cursor: crosshair; }
     .timeline-help { margin-top: 7px; color: var(--muted); font-size: 12px; }
+    .decision-summary { grid-column: 1 / -1; padding: 14px; }
+    .decision-summary-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .decision-counts { color: var(--muted); font-size: 12px; }
+    .decision-list {
+      display: grid;
+      gap: 7px;
+      max-height: 360px;
+      overflow: auto;
+    }
+    .decision-row {
+      display: grid;
+      grid-template-columns: minmax(150px, 0.8fr) minmax(130px, 0.7fr) minmax(260px, 2fr);
+      gap: 12px;
+      width: 100%;
+      padding: 9px 11px;
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--uncertain);
+      border-radius: 6px;
+      color: var(--text);
+      background: var(--panel-2);
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    .decision-row:hover, .decision-row:focus-visible { border-color: var(--text); }
+    .decision-row.keep { border-left-color: var(--keep); }
+    .decision-row.discard { border-left-color: var(--rejected); }
+    .decision-row.review { border-left-color: var(--uncertain); }
+    .decision-primary { font-size: 13px; font-weight: 700; }
+    .decision-interval { font-size: 13px; font-variant-numeric: tabular-nums; }
+    .decision-evidence { color: var(--muted); font-size: 12px; line-height: 1.35; }
     @media (max-width: 820px) {
       header { align-items: flex-start; flex-direction: column; }
       main { grid-template-columns: 1fr; }
       .timeline { grid-column: 1; }
+      .decision-summary { grid-column: 1; }
       .timeline-head { align-items: flex-start; flex-direction: column; }
       .legend { justify-content: flex-start; }
+      .decision-summary-head { align-items: flex-start; flex-direction: column; }
+      .decision-row { grid-template-columns: 1fr; gap: 4px; }
     }
   </style>
 </head>
@@ -150,13 +205,13 @@ _REPORT_TEMPLATE = r"""<!doctype html>
     <aside class="panel side" aria-label="Evidencia del instante actual">
       <h2>Instante actual</h2>
       <div class="time" id="current-time">—</div>
-      <div class="candidate">
+      <div class="candidate" id="segment-decision">
         <strong id="candidate-title">Sin candidato</strong>
-        <span id="candidate-detail">Reproducí el video para inspeccionar el resultado.</span>
+        <span id="candidate-detail">Reproducí el video para inspeccionar la decisión preliminar.</span>
       </div>
       <h2>Raw scores</h2>
       <div id="score-list" aria-live="polite"></div>
-      <p class="note">“Top candidate” significa únicamente que ese rostro tiene el raw score más alto durante una ventana con voz. No es una probabilidad ni una decisión final.</p>
+      <p class="note">“Top candidate” significa únicamente que ese rostro tiene el raw score más alto durante una ventana con voz. Los candidate runs ya cumplen duración, cobertura y estabilidad visual, pero todavía no son clips finales. Y/P/R y Q siguen siendo evidencia cruda sin thresholds de aceptación.</p>
       <p class="issues" id="issues"></p>
     </aside>
     <section class="panel timeline" aria-label="Timeline de scores y voz">
@@ -165,7 +220,15 @@ _REPORT_TEMPLATE = r"""<!doctype html>
         <div class="legend" id="legend"></div>
       </div>
       <canvas id="timeline" role="img" aria-label="Raw scores por rostro, intervalos de voz, reparaciones de audio y posición actual"></canvas>
-      <div class="timeline-help">Hacé click en la timeline para saltar a ese instante. El fondo verde marca voz; las líneas verticales violetas marcan reparaciones del audio.</div>
+      <div class="timeline-help">Hacé click en la timeline para saltar a ese instante. El fondo verde marca voz; las líneas verticales violetas marcan reparaciones del audio. La banda inferior muestra decisiones preliminares y, encima de las regiones elegibles, el resultado refinado del candidate run.</div>
+    </section>
+    <section class="panel decision-summary" aria-label="Resumen de decisiones por segmento">
+      <div class="decision-summary-head">
+        <h2>Decisiones por segmento</h2>
+        <div class="decision-counts" id="decision-counts"></div>
+      </div>
+      <div class="decision-list" id="decision-list"></div>
+      <div class="timeline-help">Verde significa conservar en esta etapa; rojo, descartar; gris, revisar. Hacé click en una fila para saltar al comienzo del segmento.</div>
     </section>
   </main>
   <script>
@@ -179,9 +242,12 @@ _REPORT_TEMPLATE = r"""<!doctype html>
     const timelineContext = timeline.getContext("2d");
     const speechPill = document.getElementById("speech-pill");
     const scoreList = document.getElementById("score-list");
+    const segmentDecision = document.getElementById("segment-decision");
     const candidateTitle = document.getElementById("candidate-title");
     const candidateDetail = document.getElementById("candidate-detail");
     const currentTimeLabel = document.getElementById("current-time");
+    const decisionCounts = document.getElementById("decision-counts");
+    const decisionList = document.getElementById("decision-list");
     let lastSideSignature = "";
 
     document.getElementById("source-name").textContent =
@@ -205,6 +271,24 @@ _REPORT_TEMPLATE = r"""<!doctype html>
 
     function formatScore(score) {
       return `${score >= 0 ? "+" : ""}${score.toFixed(3)}`;
+    }
+
+    function formatReasons(reasons) {
+      const labels = {
+        no_speech: "sin habla",
+        no_visible_face: "sin rostro visible",
+        multiple_visible_faces: "varios rostros visibles",
+        face_identity_changed: "cambio de identidad visible",
+        no_active_speaker_score: "sin score de active speaker",
+        non_positive_active_speaker_score: "score de active speaker no positivo",
+        single_visible_face: "un solo rostro visible",
+        positive_raw_active_speaker_score: "score crudo positivo",
+        structural_policy_passed: "pasó duración, cobertura y estabilidad",
+        candidate_too_short: "segmento demasiado corto",
+        insufficient_face_coverage: "cobertura de rostro insuficiente",
+        unstable_face_visibility: "visibilidad del rostro inestable"
+      };
+      return reasons.map(reason => labels[reason] || reason).join(" · ");
     }
 
     function containingInterval(intervals, sourceTime) {
@@ -243,13 +327,17 @@ _REPORT_TEMPLATE = r"""<!doctype html>
     function currentEvidence(sourceTime) {
       const scoreWindow = containingInterval(REPORT.scoreWindows, sourceTime);
       const speech = containingInterval(REPORT.speechIntervals, sourceTime);
+      const preliminarySegment = containingInterval(REPORT.preliminarySegments, sourceTime);
+      const candidateRun = containingInterval(REPORT.candidateRuns, sourceTime);
       const scores = scoreWindow ? scoreWindow[2] : [];
       const speechActive = speech !== null && speech[2] !== "rejected";
       let candidate = null;
       if (speechActive && scores.length) {
         candidate = scores.reduce((best, item) => item[1] > best[1] ? item : best);
       }
-      return { scoreWindow, speech, scores, speechActive, candidate };
+      return {
+        scoreWindow, speech, preliminarySegment, candidateRun, scores, speechActive, candidate
+      };
     }
 
     function sizeOverlay() {
@@ -271,53 +359,75 @@ _REPORT_TEMPLATE = r"""<!doctype html>
       overlayContext.font = `600 ${fontSize}px ui-sans-serif, sans-serif`;
       overlayContext.textBaseline = "top";
       for (const face of frame[1]) {
-        const [faceId, x, y, width, height] = face;
+        const [faceId, x, y, width, height, yaw, pitch, roll, quality] = face;
         const color = colorForFace(faceId);
         const isCandidate = evidence.candidate !== null && evidence.candidate[0] === faceId;
         overlayContext.strokeStyle = isCandidate ? "#f4ba43" : color;
         overlayContext.lineWidth = isCandidate ? lineWidth * 2 : lineWidth;
         overlayContext.strokeRect(x, y, width, height);
         const scoreItem = evidence.scores.find(item => item[0] === faceId);
-        const label = scoreItem
+        const scoreLabel = scoreItem
           ? `Face ${faceId} · ${formatScore(scoreItem[1])}${isCandidate ? " · top" : ""}`
           : `Face ${faceId} · no score`;
-        const metrics = overlayContext.measureText(label);
+        const visualLabel = `Y/P/R ${yaw.toFixed(1)}/${pitch.toFixed(1)}/${roll.toFixed(1)}° · Q ${quality.toFixed(3)}`;
+        const scoreMetrics = overlayContext.measureText(scoreLabel);
+        const visualMetrics = overlayContext.measureText(visualLabel);
         const padding = Math.max(4, Math.round(fontSize * 0.32));
-        const labelHeight = fontSize + padding * 2;
+        const labelWidth = Math.max(scoreMetrics.width, visualMetrics.width);
+        const labelHeight = fontSize * 2 + padding * 3;
         const labelY = Math.max(0, y - labelHeight);
         overlayContext.fillStyle = isCandidate ? "#f4ba43" : color;
-        overlayContext.fillRect(x, labelY, metrics.width + padding * 2, labelHeight);
+        overlayContext.fillRect(x, labelY, labelWidth + padding * 2, labelHeight);
         overlayContext.fillStyle = "#101216";
-        overlayContext.fillText(label, x + padding, labelY + padding);
+        overlayContext.fillText(scoreLabel, x + padding, labelY + padding);
+        overlayContext.fillText(visualLabel, x + padding, labelY + padding * 2 + fontSize);
       }
     }
 
     function updateSide(sourceTime, evidence) {
-      const signature = JSON.stringify([Math.floor(sourceTime * 10), evidence.speech, evidence.scores]);
+      const signature = JSON.stringify([
+        Math.floor(sourceTime * 10), evidence.speech, evidence.preliminarySegment,
+        evidence.candidateRun, evidence.scores
+      ]);
       if (signature === lastSideSignature) return;
       lastSideSignature = signature;
       currentTimeLabel.textContent = `${formatTime(sourceTime)} · source time`;
       const inside = sourceTime >= REPORT.interval.start && sourceTime < REPORT.interval.end;
+      segmentDecision.classList.remove("rejected", "uncertain", "keep");
       if (!inside) {
         speechPill.textContent = "Fuera del intervalo analizado";
         speechPill.classList.add("inactive");
         candidateTitle.textContent = "Sin candidato";
         candidateDetail.textContent = "Este instante no forma parte del análisis.";
-      } else if (evidence.speechActive) {
-        speechPill.textContent = `Speech ${evidence.speech[2]}`;
-        speechPill.classList.remove("inactive");
-        if (evidence.candidate) {
-          candidateTitle.textContent = `Face ${evidence.candidate[0]} · top candidate`;
-          candidateDetail.textContent = "Hay voz y este rostro tiene el raw score más alto.";
-        } else {
-          candidateTitle.textContent = "Voz sin candidato visible";
-          candidateDetail.textContent = "Hay voz, pero esta ventana no tiene scores de rostros.";
-        }
       } else {
-        speechPill.textContent = evidence.speech ? `Speech ${evidence.speech[2]}` : "No speech";
-        speechPill.classList.add("inactive");
-        candidateTitle.textContent = "Sin candidato";
-        candidateDetail.textContent = "No hay un intervalo de voz activo.";
+        if (evidence.speechActive) {
+          speechPill.textContent = `Speech ${evidence.speech[2]}`;
+          speechPill.classList.remove("inactive");
+        } else {
+          speechPill.textContent = evidence.speech ? `Speech ${evidence.speech[2]}` : "No speech";
+          speechPill.classList.add("inactive");
+        }
+        if (evidence.candidateRun) {
+          const run = evidence.candidateRun;
+          const status = run[2];
+          segmentDecision.classList.add(status === "candidate" ? "keep" : "rejected");
+          candidateTitle.textContent = `${status === "candidate" ? "CONSERVAR" : "DESCARTAR"} · Face ${run[3]}`;
+          candidateDetail.textContent = `${formatReasons(run[4])} · duración ${run[5].toFixed(2)}s (mín. ${REPORT.candidatePolicy.minimumDurationSeconds.toFixed(2)}s) · cobertura ${(run[6] * 100).toFixed(1)}% (${run[11]}/${run[12]}, mín. ${(REPORT.candidatePolicy.minimumFaceCoverage * 100).toFixed(1)}%) · hueco máx. ${run[7].toFixed(3)}s (límite ${REPORT.candidatePolicy.maximumFaceGapSeconds.toFixed(3)}s)`;
+        } else if (evidence.preliminarySegment) {
+          const segment = evidence.preliminarySegment;
+          const status = segment[2];
+          const faceId = segment[3];
+          if (status !== "candidate") segmentDecision.classList.add(status);
+          const decisionLabel = status === "rejected"
+            ? "DESCARTAR"
+            : status === "uncertain" ? "REVISAR" : "CANDIDATO PRELIMINAR";
+          candidateTitle.textContent = `${decisionLabel}${faceId === null ? "" : ` · Face ${faceId}`}`;
+          candidateDetail.textContent = formatReasons(segment[4]);
+        } else {
+          segmentDecision.classList.add("uncertain");
+          candidateTitle.textContent = "Sin evaluación preliminar";
+          candidateDetail.textContent = "No hay una ventana de score disponible en este instante.";
+        }
       }
 
       scoreList.replaceChildren();
@@ -389,6 +499,17 @@ _REPORT_TEMPLATE = r"""<!doctype html>
         timelineContext.fillStyle = "rgb(66 198 138 / 14%)";
         timelineContext.fillRect(x(interval[0]), top, x(interval[1]) - x(interval[0]), plotHeight);
       }
+      for (const segment of REPORT.preliminarySegments) {
+        const color = segment[2] === "candidate"
+          ? "#f4ba43"
+          : segment[2] === "rejected" ? "#f06a6a" : "#9aa7b8";
+        timelineContext.fillStyle = color;
+        timelineContext.fillRect(x(segment[0]), top + plotHeight - 7, x(segment[1]) - x(segment[0]), 7);
+      }
+      for (const run of REPORT.candidateRuns) {
+        timelineContext.fillStyle = run[2] === "candidate" ? "#42c68a" : "#f06a6a";
+        timelineContext.fillRect(x(run[0]), top + plotHeight - 7, x(run[1]) - x(run[0]), 7);
+      }
       timelineContext.strokeStyle = "#353c46";
       timelineContext.lineWidth = 1;
       timelineContext.fillStyle = "#a7b0bc";
@@ -450,8 +571,119 @@ _REPORT_TEMPLATE = r"""<!doctype html>
       if (!video.paused && !video.ended) window.requestAnimationFrame(render);
     }
 
+    function finalDecisions() {
+      const decisions = REPORT.candidateRuns.map(run => ({
+        start: run[0],
+        end: run[1],
+        decision: run[2] === "candidate" ? "keep" : "discard",
+        faceId: run[3],
+        reasons: run[4],
+        duration: run[5],
+        coverage: run[6],
+        maximumGap: run[7],
+        observedCount: run[11],
+        expectedCount: run[12],
+        kind: "run"
+      }));
+      for (const segment of REPORT.preliminarySegments) {
+        if (segment[2] === "candidate") {
+          const middle = (segment[0] + segment[1]) / 2;
+          if (containingInterval(REPORT.candidateRuns, middle)) continue;
+        }
+        decisions.push({
+          start: segment[0],
+          end: segment[1],
+          decision: segment[2] === "rejected" ? "discard" : "review",
+          faceId: segment[3],
+          reasons: segment[4],
+          duration: segment[1] - segment[0],
+          coverage: null,
+          maximumGap: null,
+          observedCount: null,
+          expectedCount: null,
+          kind: "preliminary"
+        });
+      }
+      decisions.sort((left, right) => left.start - right.start || left.end - right.end);
+
+      const merged = [];
+      for (const decision of decisions) {
+        const previous = merged[merged.length - 1];
+        const samePreliminaryDecision = previous
+          && previous.kind === "preliminary"
+          && decision.kind === "preliminary"
+          && previous.decision === decision.decision
+          && previous.faceId === decision.faceId
+          && previous.reasons.join("|") === decision.reasons.join("|")
+          && Math.abs(previous.end - decision.start) <= 1e-6;
+        if (samePreliminaryDecision) {
+          previous.end = decision.end;
+          previous.duration = previous.end - previous.start;
+        } else {
+          merged.push(decision);
+        }
+      }
+      return merged;
+    }
+
+    function buildDecisionSummary() {
+      const decisions = finalDecisions();
+      const keepCount = decisions.filter(item => item.decision === "keep").length;
+      const discardCount = decisions.filter(item => item.decision === "discard").length;
+      const reviewCount = decisions.filter(item => item.decision === "review").length;
+      decisionCounts.textContent = `${keepCount} conservar · ${discardCount} descartar · ${reviewCount} revisar`;
+
+      if (!decisions.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No hay regiones evaluadas.";
+        decisionList.appendChild(empty);
+        return;
+      }
+      for (const decision of decisions) {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = `decision-row ${decision.decision}`;
+        const primary = document.createElement("span");
+        primary.className = "decision-primary";
+        const label = decision.decision === "keep"
+          ? "CONSERVAR"
+          : decision.decision === "discard" ? "DESCARTAR" : "REVISAR";
+        primary.textContent = `${label}${decision.faceId === null ? "" : ` · Face ${decision.faceId}`}`;
+        const interval = document.createElement("span");
+        interval.className = "decision-interval";
+        interval.textContent = `${formatTime(decision.start)} – ${formatTime(decision.end)} · ${decision.duration.toFixed(2)}s`;
+        const evidence = document.createElement("span");
+        evidence.className = "decision-evidence";
+        const metrics = decision.coverage === null
+          ? ""
+          : ` · cobertura ${(decision.coverage * 100).toFixed(1)}% (${decision.observedCount}/${decision.expectedCount}) · hueco máx. ${decision.maximumGap.toFixed(3)}s`;
+        evidence.textContent = `${formatReasons(decision.reasons)}${metrics}`;
+        row.append(primary, interval, evidence);
+        row.addEventListener("click", () => {
+          video.currentTime = decision.start;
+          render();
+          video.scrollIntoView({ behavior: "smooth", block: "center" });
+        });
+        decisionList.appendChild(row);
+      }
+    }
+
     function buildLegend() {
       const legend = document.getElementById("legend");
+      for (const [label, color] of [
+        ["Conservar", "#42c68a"],
+        ["Descartar", "#f06a6a"],
+        ["Revisar", "#9aa7b8"]
+      ]) {
+        const item = document.createElement("span");
+        item.className = "legend-item";
+        const line = document.createElement("span");
+        line.className = "legend-line";
+        line.style.background = color;
+        item.append(line, label);
+        legend.appendChild(item);
+      }
       for (const faceId of REPORT.faceIds) {
         const item = document.createElement("span");
         item.className = "legend-item";
@@ -494,6 +726,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
     });
     window.addEventListener("resize", render);
     buildLegend();
+    buildDecisionSummary();
     render();
   </script>
 </body>
@@ -512,8 +745,10 @@ def render_active_speaker_report(
 
     The report contains the analysis data and UI code in one HTML file. It references the original
     local video through a file URL instead of copying or re-encoding media. Playback time drives
-    face boxes, raw-score windows, VAD state, audio-repair markers, and the chart cursor. The largest
-    raw score during a non-rejected speech interval is labelled only as a ``top candidate``.
+    face boxes, raw head-pose and quality evidence, raw-score windows, VAD state, audio-repair
+    markers, and the chart cursor. The largest raw score during a non-rejected speech interval is
+    labelled only as a ``top candidate``. Pose and quality remain diagnostic backend values without
+    acceptance thresholds.
 
     Parameters
     ----------
@@ -595,6 +830,8 @@ def _build_report_payload(
             [
                 observation.face_id,
                 *(_rounded(value) for value in observation.bounding_box_xywh),
+                *(_rounded(value) for value in observation.head_pose_yaw_pitch_roll_degrees),
+                _rounded(observation.raw_face_quality_score),
             ]
         )
     for window in result.score_windows:
@@ -636,6 +873,36 @@ def _build_report_payload(
             key=lambda item: item.source_start_seconds,
         )
     ]
+    preliminary_segments = [
+        [
+            _rounded(segment.source_start_seconds),
+            _rounded(segment.source_end_seconds),
+            segment.status,
+            segment.face_id,
+            list(segment.reason_codes),
+            None if segment.raw_score is None else _rounded(segment.raw_score),
+            list(segment.visible_face_ids),
+        ]
+        for segment in result.preliminary_segments
+    ]
+    candidate_runs = [
+        [
+            _rounded(run.source_start_seconds),
+            _rounded(run.source_end_seconds),
+            run.status,
+            run.face_id,
+            list(run.reason_codes),
+            _rounded(run.duration_seconds),
+            _rounded(run.face_visibility_fraction),
+            _rounded(run.maximum_face_gap_seconds),
+            _rounded(run.raw_score_min),
+            _rounded(run.raw_score_mean),
+            _rounded(run.raw_score_max),
+            run.face_observation_count,
+            run.expected_face_observation_count,
+        ]
+        for run in result.candidate_runs
+    ]
     return {
         "video": {
             "name": source_path.name,
@@ -652,6 +919,13 @@ def _build_report_payload(
         "faceFrames": face_frames,
         "scoreWindows": score_windows,
         "speechIntervals": speech_intervals,
+        "preliminarySegments": preliminary_segments,
+        "candidatePolicy": {
+            "minimumDurationSeconds": _rounded(result.candidate_policy.minimum_duration_seconds),
+            "minimumFaceCoverage": _rounded(result.candidate_policy.minimum_face_coverage),
+            "maximumFaceGapSeconds": _rounded(result.candidate_policy.maximum_face_gap_seconds),
+        },
+        "candidateRuns": candidate_runs,
         "repairs": repairs,
         "issues": list(result.issues),
         "backend": {
