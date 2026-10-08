@@ -292,6 +292,15 @@ def _print_active_speaker_summary(
     print(f"face IDs: {face_ids if face_ids else 'none'}")
     print(f"face observations: {len(result.face_observations)}")
 
+    print("hard shot boundaries:")
+    if not result.shot_boundaries:
+        print("  none")
+    for boundary in result.shot_boundaries:
+        print(
+            f"  {boundary.source_timestamp_seconds:.3f} "
+            f"changed_pixels={boundary.changed_pixel_fraction:.1%}"
+        )
+
     print("speech intervals:")
     if not result.speech_intervals:
         print("  none")
@@ -331,19 +340,25 @@ def _print_active_speaker_summary(
         "  policy: "
         f"minimum_duration={policy.minimum_duration_seconds:.3f}s, "
         f"minimum_face_coverage={policy.minimum_face_coverage:.1%}, "
-        f"maximum_face_gap={policy.maximum_face_gap_seconds:.3f}s"
+        f"maximum_face_gap={policy.maximum_face_gap_seconds:.3f}s, "
+        f"maximum_bridge_gap={policy.maximum_bridge_gap_seconds:.3f}s"
     )
     if not result.candidate_runs:
         print("  none")
     for run in result.candidate_runs:
         reasons = ",".join(run.reason_codes)
+        bridged_gaps = ",".join(
+            f"[{start_seconds:.3f},{end_seconds:.3f})"
+            for start_seconds, end_seconds in run.bridged_gap_intervals
+        )
         print(
             f"  [{run.source_start_seconds:.3f}, {run.source_end_seconds:.3f}) "
             f"{run.status} face_{run.face_id} duration={run.duration_seconds:.3f}s "
             f"coverage={run.face_visibility_fraction:.1%} "
             f"max_gap={run.maximum_face_gap_seconds:.3f}s "
             f"score[min/mean/max]={run.raw_score_min:+.3f}/"
-            f"{run.raw_score_mean:+.3f}/{run.raw_score_max:+.3f} ({reasons})"
+            f"{run.raw_score_mean:+.3f}/{run.raw_score_max:+.3f} ({reasons}) "
+            f"bridged_gaps={bridged_gaps or 'none'}"
         )
 
     print("audio timeline repairs:")

@@ -46,7 +46,7 @@ VideoSource + source interval
                          |
                          v
              continuous same-face run policy
-       duration + face coverage + maximum gap
+       temporal continuity + duration + face coverage
                          |
                          v
               JSON report + diagnostic overlay
@@ -199,8 +199,9 @@ The optional demo report lives under `talkingfacekit.demo`, outside the core and
 surface. It serializes copied DeepTalk observations into one offline HTML document and references
 the unchanged local video by file URL. Browser playback time is the only synchronization clock for
 boxes, pose, raw quality, VAD state, raw scores, preliminary decisions, continuous candidate-run
-decisions, repair markers, and the diagnostic timeline. The report labels the largest score during
-speech as a `top candidate`; it does not add a probability or accepted training-segment decision.
+decisions, hard-shot and repair markers, and the diagnostic timeline. The report labels the largest
+score during speech as a `top candidate`; it does not add a probability or accepted
+training-segment decision.
 It also derives a clickable review list from the same immutable evidence, labelling regions as
 `CONSERVAR`, `DESCARTAR`, or `REVISAR` for the current policy stage. This isolation allows the demo
 UI to be removed or replaced without changing core contracts or the DeepTalk adapter.
@@ -219,14 +220,34 @@ camera-facing or visual-suitability decision. Open-ended sequences report unequa
 do not retain face observations after audio coverage ends.
 
 The first TalkingFaceKit-owned policy is deliberately pre-calibration and remains represented by
-integration-specific immutable values while DeepTalk is the only evaluated backend. It splits score
-windows at active VAD boundaries and rejects regions with no speech, no visible face, simultaneous
-faces, changing face identity, or a non-positive raw score. A missing score for one visible face is
-uncertain. One visible identity with a positive raw score is only a `candidate`; it is not accepted
-until later stages pass. Adjacent preliminary candidates for the same identity are merged into
-continuous `DeepTalkCandidateRun` values. The first structural policy measures duration, detection
-coverage against the 25 Hz grid, the largest interval without a face detection, and raw-score
-min/mean/max. Initial defaults require two seconds, 90% coverage, and no visibility gap above 200
+integration-specific immutable values while DeepTalk is the only evaluated backend. Alongside the
+DeepTalk input conversion, TalkingFaceKit compares consecutive 25 Hz frames on a fixed 36-by-64
+luminance thumbnail. A hard cut is recorded when at least 15% of those pixels change by 20 or more
+8-bit luminance levels. The source timestamp and observed fraction are copied into an immutable
+`DeepTalkShotBoundary`; this deliberately narrow detector does not claim to detect fades or physical
+identity.
+
+The policy splits score windows at active VAD and hard-shot boundaries and rejects regions with no
+speech, no visible face, simultaneous faces, changing face identity, or a non-positive raw score. A
+missing score for one visible face is uncertain. One visible identity with a positive raw score is
+only a `candidate`; it is not accepted until later stages pass. These preliminary decisions and raw
+scores are immutable instantaneous evidence.
+
+The temporal policy merges adjacent preliminary candidates for the same identity within one shot.
+It may also bridge at most 1.25 seconds containing only non-positive ASD evidence or a brief VAD
+interruption when positive ASD evidence resumes immediately for the same face. The gap itself must
+retain at least 90% face coverage, no missing-face interval above 200 milliseconds, exactly one
+visible face, continuous preliminary coverage, and no shot boundary. Ambiguity, identity change,
+missing scores, missing faces, longer gaps, and trailing rejected time remain hard stops. This
+offline look-ahead is the hangover: it delays the continuity decision but does not append grace
+silence when positive evidence never returns. Every retained gap is recorded in
+`bridged_gap_intervals`, while its red preliminary decision remains visible in the report.
+
+This prevents an isolated ASD failure from fragmenting a clip without treating VAD plus one visible
+face as proof of speaking, and it still prevents a reused DeepTalk local track ID from bridging a
+hard cut. The structural policy then measures duration, detection coverage against the 25 Hz grid,
+the largest interval without a face detection, and raw-score min/mean/max over positive candidate
+evidence. Initial defaults require two seconds, 90% coverage, and no visibility gap above 200
 milliseconds. They are explicit conservative starting values rather than calibrated guarantees;
 failed runs stay in the result with stable reason codes. Even a passing run still requires
 calibrated-score, pose, quality, and synchronization decisions. Every stage retains reason codes and

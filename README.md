@@ -161,6 +161,7 @@ result = analyze_sequence(sequence)
 print(result.face_observations)
 print(result.speech_intervals)
 print(result.score_windows)
+print(result.shot_boundaries)
 print(result.preliminary_segments)
 print(result.provenance)
 print(result.audio_timeline_repairs)
@@ -193,15 +194,18 @@ uv run --extra active-speaker-deeptalk python -m talkingfacekit analyze-video \
   --report /ruta/al/reporte.html
 ```
 
-Al abrir el HTML en el navegador, los boxes, IDs, pose, calidad, scores crudos, estado de voz y
-cursor de la timeline siguen el tiempo del reproductor. El rostro con mayor score durante un
-intervalo de voz se marca como `top candidate`, nunca como probabilidad o decisión final. Los
-ángulos y la calidad también se muestran como evidencia cruda, todavía sin thresholds de
-aceptación. Hacer click en el gráfico mueve el video a ese instante. El archivo depende de que el
-video original continúe en la misma ruta. El panel **Decisiones por segmento** muestra
-`CONSERVAR`, `DESCARTAR` o `REVISAR`, resume las razones y métricas, y permite saltar al comienzo de
-cada región con un click. Si el destino ya existe, la CLI crea automáticamente un hermano numerado
-como `reporte-2.html`; `--overwrite` permite reemplazar deliberadamente el nombre solicitado.
+Al abrir el HTML en el navegador, los boxes, IDs, pose, calidad, scores crudos, estado de voz,
+cortes de plano y cursor de la timeline siguen el tiempo del reproductor. El rostro con mayor score
+durante un intervalo de voz se marca como `top candidate`, nunca como probabilidad o decisión
+final. Los ángulos y la calidad también se muestran como evidencia cruda, todavía sin thresholds
+de aceptación. Hacer click en el gráfico mueve el video a ese instante. El archivo depende de que
+el video original continúe en la misma ruta. El panel **Decisiones por segmento** distingue
+decisiones `INSTANTÁNEO` y `FINAL`, muestra `CONSERVAR`, `DESCARTAR` o `REVISAR`, resume las razones
+y métricas, y permite saltar al comienzo de cada región con un click. La banda inferior de la
+timeline conserva la clasificación preliminar, incluidos los scores ASD negativos; una banda
+separada justo encima muestra el candidate run final. Si el destino ya existe, la CLI crea
+automáticamente un hermano numerado como `reporte-2.html`; `--overwrite` permite reemplazar
+deliberadamente el nombre solicitado.
 
 El resultado también contiene una primera clasificación conservadora por subintervalo:
 
@@ -212,13 +216,32 @@ El resultado también contiene una primera clasificación conservadora por subin
   positivo.
 
 Cada segmento incluye razones machine-readable, los IDs observados y el score sin modificar. Un
-`candidate` preliminar no es todavía un clip aceptado. Los candidatos adyacentes de la misma
-identidad se unen luego en `candidate_runs` continuos. Cada run mide duración, cobertura de
-detecciones a 25 Hz, mayor hueco sin rostro y score crudo mínimo/promedio temporal/máximo. La
-política inicial
-exige al menos 2 segundos, 90% de cobertura y ningún hueco visual mayor a 200 ms; un run que falla
-queda preservado como `rejected` con razones explícitas. Estos valores son puntos de partida
-conservadores, no thresholds calibrados.
+`candidate` preliminar no es todavía un clip aceptado. TalkingFaceKit también detecta cortes duros
+comparando thumbnails de luminancia de frames consecutivos en la misma grilla de 25 Hz. Un corte se
+registra cuando al menos 15% de los pixels cambian 20 o más niveles de luminancia de 8 bits. Su
+timestamp de fuente y fracción observada quedan en `shot_boundaries`; los intervalos preliminares se
+dividen allí y dos candidatos nunca se unen a través del corte, aunque DeepTalk reutilice el mismo
+`face_id`. Esta regla cubre cortes duros, no fades ni identidad biométrica.
+
+Los candidatos adyacentes de la misma identidad dentro de un mismo plano se unen luego en
+`candidate_runs` continuos. La política temporal también puede unir dos candidatos separados por un
+hueco de hasta 1,25 segundos, pero solamente si el hueco contiene decisiones ASD no positivas o una
+interrupción breve de VAD, se observa únicamente el mismo `face_id` con al menos 90% de cobertura,
+no hay un hueco de detección mayor a 200 ms y no existe un corte de plano. Debe haber evidencia ASD
+positiva inmediatamente antes y después: una región negativa al final no se agrega al run. Por eso
+el límite funciona como una gracia de decisión offline, no como padding de silencio.
+
+Los intervalos tolerados quedan explícitos en `bridged_gap_intervals`. La clasificación preliminar y
+los scores crudos no se modifican; durante un puente el HTML puede mostrar simultáneamente el rechazo
+ASD instantáneo y la conservación final por continuidad. El resumen mínimo/promedio/máximo del run
+usa sólo los segmentos con score positivo, mientras los valores negativos siguen visibles en las
+ventanas y segmentos preliminares.
+
+Cada run mide duración, cobertura de detecciones a 25 Hz, mayor hueco sin rostro y score crudo
+mínimo/promedio temporal/máximo de su evidencia positiva. La política estructural inicial exige al
+menos 2 segundos, 90% de cobertura y ningún hueco visual mayor a 200 ms; un run que falla queda
+preservado como `rejected` con razones explícitas. Estos valores son puntos de partida conservadores,
+no thresholds calibrados.
 
 Incluso un run que pasa esta etapa sigue sin ser un clip aceptado: faltan calibración del score,
 pose, calidad visual y sincronización. La regla positiva sólo conserva candidatos para esas etapas;
