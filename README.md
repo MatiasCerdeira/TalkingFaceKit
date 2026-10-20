@@ -193,6 +193,39 @@ uv run --extra active-speaker-deeptalk python -m talkingfacekit analyze-video \
   --report /ruta/al/reporte.html
 ```
 
+### Benchmark con selecciones humanas
+
+El equipo completa un JSON simple con cuatro campos por caso: `file`, `start_seconds`,
+`end_seconds` y `selected`. La [guía de recolección](benchmark/README.md) explica cómo elegir y anotar
+los videos e incluye una [plantilla](benchmark/annotations.example.json). Videos y etiquetas se
+comparten fuera de Git. Una persona genera el manifiesto aprobado con identificadores y hashes
+automáticos y lo comparte con el resto:
+
+```bash
+uv run python -m talkingfacekit prepare-benchmark data/eval/annotations.json \
+  --videos-dir data/eval/videos --output data/eval/manifest.json
+```
+
+El comando `evaluate-benchmark` compara los `candidate_runs` actuales con esas selecciones humanas.
+Opcionalmente, un digest versionado en Git fija el manifiesto aprobado. Se puede verificar el
+material sin cargar modelos:
+
+```bash
+uv run python -m talkingfacekit evaluate-benchmark data/eval/manifest.json \
+  --videos-dir data/eval/videos --verify-only
+```
+
+La corrida completa requiere el extra DeepTalk y puede guardar métricas y predicciones en JSON:
+
+```bash
+uv run --extra active-speaker-deeptalk python -m talkingfacekit evaluate-benchmark \
+  data/eval/manifest.json --videos-dir data/eval/videos \
+  --output reports/benchmark-run.json
+```
+
+La corrida completa también verifica los archivos antes de ejecutar modelos. Si se guardó el hash
+del manifiesto aprobado en Git, agregar `--manifest-lock benchmark/manifest.sha256`.
+
 Al abrir el HTML en el navegador, los boxes, IDs, pose, calidad, scores crudos, estado de voz y
 cursor de la timeline siguen el tiempo del reproductor. El rostro con mayor score durante un
 intervalo de voz se marca como `top candidate`, nunca como probabilidad o decisión final. Los

@@ -342,6 +342,18 @@ must be documented here before becoming public contracts.
 - A bug fix includes a regression test that fails without the fix.
 - Cross-platform code must avoid assumptions about path separators, shell syntax, and hardware.
 
+Human annotators fill a JSON list with only `file`, `start_seconds`, `end_seconds`, and `selected`.
+`prepare-benchmark` validates paths and intervals, generates case IDs and complete-file SHA-256
+hashes, and writes the versioned manifest once for sharing. Explicit source-time windows avoid
+requiring media cuts or treating estimated stream duration as an exact final timestamp. The
+annotations contain no tags or per-component labels. Raw videos and labels remain outside Git in a
+locally configured directory. An optional digest lock kept in Git identifies the approved manifest
+version. Verification of labels and media hashes runs without loading models; the
+opt-in benchmark then compares DeepTalk candidate runs with human selections by duration and writes
+a JSON report outside Git. This deliberately evaluates the current selection stage without claiming
+that structural candidates are final FLAME-ready clips. Public tests use only synthetic labels and
+tiny existing fixtures.
+
 ## Current decisions
 
 | Decision                                   | Rationale                                                                                              |

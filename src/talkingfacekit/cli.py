@@ -1,14 +1,28 @@
 """Command-line workflows for TalkingFaceKit."""
 
 import argparse
+import hashlib
+import json
 import logging
+import re
+import subprocess
 from collections.abc import Sequence
+from dataclasses import asdict
+from importlib.metadata import version
 from pathlib import Path
 from typing import cast
 
 import numpy as np
 
 from talkingfacekit.demo import render_active_speaker_report
+from talkingfacekit.evaluation import (
+    EvaluationInterval,
+    combine_evaluation_metrics,
+    load_evaluation_cases,
+    prepare_evaluation_manifest,
+    score_evaluation_case,
+    verify_evaluation_videos,
+)
 from talkingfacekit.integrations.deeptalk import DeepTalkAnalysisResult, analyze_sequence
 from talkingfacekit.io.landmarks import load_landmark_track, save_landmark_track
 from talkingfacekit.io.video import inspect_video_metadata
@@ -46,12 +60,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _render_mesh(arguments)
         if command == "analyze-video":
             return _analyze_video(arguments)
+        if command == "evaluate-benchmark":
+            return _evaluate_benchmark(arguments)
+        if command == "prepare-benchmark":
+            return _prepare_benchmark(arguments)
     except (
         FileNotFoundError,
         FileExistsError,
         IsADirectoryError,
         ImportError,
         RuntimeError,
+        TypeError,
         ValueError,
     ) as error:
         parser.exit(2, f"error: {error}\n")
@@ -172,6 +191,50 @@ def _build_parser() -> argparse.ArgumentParser:
             "sibling."
         ),
     )
+
+    preparation_parser = subparsers.add_parser(
+        "prepare-benchmark",
+        help="Generate a hashed benchmark manifest from simple human annotations.",
+    )
+    preparation_parser.add_argument("annotations", type=Path, help="Simple annotations JSON list.")
+    preparation_parser.add_argument(
+        "--videos-dir", type=Path, required=True, help="Directory containing annotated videos."
+    )
+    preparation_parser.add_argument(
+        "--output", type=Path, required=True, help="Destination generated manifest JSON."
+    )
+    preparation_parser.add_argument(
+        "--overwrite", action="store_true", help="Replace an existing manifest."
+    )
+
+    evaluation_parser = subparsers.add_parser(
+        "evaluate-benchmark",
+        help="Verify labeled videos and compare selected intervals with DeepTalk candidate runs.",
+    )
+    evaluation_parser.add_argument("manifest", type=Path, help="Versioned benchmark JSON manifest.")
+    evaluation_parser.add_argument(
+        "--videos-dir",
+        type=Path,
+        required=True,
+        help="Local directory containing benchmark videos.",
+    )
+    evaluation_parser.add_argument(
+        "--manifest-lock",
+        type=Path,
+        default=None,
+        help="File containing the approved SHA-256 digest of the manifest.",
+    )
+    evaluation_parser.add_argument(
+        "--verify-only",
+        action="store_true",
+        help="Validate labels and SHA-256 hashes without loading inference models.",
+    )
+    evaluation_parser.add_argument(
+        "--output", type=Path, default=None, help="Optional JSON path for metrics and predictions."
+    )
+    evaluation_parser.add_argument(
+        "--overwrite", action="store_true", help="Replace an existing JSON output file."
+    )
     return parser
 
 
@@ -264,6 +327,146 @@ def _analyze_video(arguments: argparse.Namespace) -> int:
         )
         print(f"report: {saved_path}")
     return 0
+
+
+def _prepare_benchmark(arguments: argparse.Namespace) -> int:
+    annotations_path = cast(Path, arguments.annotations)
+    videos_dir = cast(Path, arguments.videos_dir)
+    output_path = cast(Path, arguments.output)
+    overwrite = cast(bool, arguments.overwrite)
+    if output_path.resolve() == annotations_path.resolve():
+        raise ValueError("manifest output must differ from the human annotations file")
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(f"benchmark manifest already exists: {output_path}")
+    manifest = prepare_evaluation_manifest(annotations_path, videos_dir)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w" if overwrite else "x", encoding="utf-8") as destination:
+        destination.write(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+    print(f"manifest: {output_path}")
+    return 0
+
+
+def _evaluate_benchmark(arguments: argparse.Namespace) -> int:
+    manifest_path = cast(Path, arguments.manifest)
+    videos_dir = cast(Path, arguments.videos_dir)
+    manifest_lock = cast(Path | None, arguments.manifest_lock)
+    verify_only = cast(bool, arguments.verify_only)
+    output_path = cast(Path | None, arguments.output)
+    overwrite = cast(bool, arguments.overwrite)
+    if verify_only and output_path is not None:
+        raise ValueError("--output cannot be combined with --verify-only")
+    if overwrite and output_path is None:
+        raise ValueError("--overwrite requires --output")
+    if output_path is not None and output_path.exists() and not overwrite:
+        raise FileExistsError(f"benchmark output already exists: {output_path}")
+
+    manifest_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    if manifest_lock is not None:
+        expected_digest = manifest_lock.read_text(encoding="utf-8").strip()
+        if re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None:
+            raise ValueError(f"invalid benchmark manifest lock digest: {manifest_lock}")
+        if manifest_digest != expected_digest:
+            raise ValueError(
+                f"benchmark manifest SHA-256 mismatch: expected {expected_digest}, "
+                f"got {manifest_digest}"
+            )
+
+    cases = load_evaluation_cases(manifest_path)
+    video_paths = verify_evaluation_videos(cases, videos_dir)
+    print(f"verified {len(cases)} benchmark cases and their source video hashes")
+    if verify_only:
+        return 0
+
+    case_reports: list[dict[str, object]] = []
+    case_metrics = []
+    for case in cases:
+        sequence = TalkingFaceSequence.from_video(video_paths[case.case_id]).clip(
+            case.window.start_seconds, case.window.end_seconds
+        )
+        result = analyze_sequence(sequence)
+        if not result.score_windows:
+            raise RuntimeError(f"{case.case_id}: analysis returned no score windows")
+        predicted = tuple(
+            EvaluationInterval(run.source_start_seconds, run.source_end_seconds)
+            for run in result.candidate_runs
+            if run.status == "candidate"
+        )
+        metrics = score_evaluation_case(case, predicted)
+        case_metrics.append(metrics)
+        print(
+            f"{case.case_id}: precision={_format_ratio(metrics.precision)} "
+            f"recall={_format_ratio(metrics.recall)} "
+            f"false_accept={metrics.false_positive_seconds:.2f}s "
+            f"missed={metrics.false_negative_seconds:.2f}s"
+        )
+        case_reports.append(
+            {
+                "id": case.case_id,
+                "file": case.file.as_posix(),
+                "sha256": case.sha256,
+                "window": [case.window.start_seconds, case.window.end_seconds],
+                "selected": [[item.start_seconds, item.end_seconds] for item in case.selected],
+                "ignore": [[item.start_seconds, item.end_seconds] for item in case.ignored],
+                "predicted": [[item.start_seconds, item.end_seconds] for item in predicted],
+                "metrics": asdict(metrics),
+                "backend_version": result.provenance.backend_version,
+                "candidate_policy": asdict(result.candidate_policy),
+                "issues": list(result.issues),
+            }
+        )
+    overall = combine_evaluation_metrics(tuple(case_metrics))
+    print(
+        f"overall: precision={_format_ratio(overall.precision)} "
+        f"recall={_format_ratio(overall.recall)} "
+        f"false_accept={overall.false_positive_seconds:.2f}s "
+        f"missed={overall.false_negative_seconds:.2f}s"
+    )
+    if output_path is not None:
+        report = {
+            "schema_version": 1,
+            "package_version": version("talkingfacekit"),
+            "code_revision": _code_revision(),
+            "manifest": str(manifest_path),
+            "manifest_sha256": manifest_digest,
+            "cases": case_reports,
+            "overall": asdict(overall),
+        }
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        print(f"output: {output_path}")
+    return 0
+
+
+def _format_ratio(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.1%}"
+
+
+def _code_revision() -> dict[str, str | bool | None]:
+    repository = Path(__file__).resolve().parents[2]
+    if not (repository / ".git").exists():
+        return {"commit": None, "dirty": None}
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repository,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repository,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return {"commit": None, "dirty": None}
+    if commit.returncode != 0 or status.returncode != 0:
+        return {"commit": None, "dirty": None}
+    return {"commit": commit.stdout.strip(), "dirty": bool(status.stdout.strip())}
 
 
 def _available_report_path(path: Path, *, overwrite: bool) -> Path:
