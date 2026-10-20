@@ -829,8 +829,9 @@ Official repository: [pyannote.audio](https://github.com/pyannote/pyannote-audio
 - Shot detection is not necessary to prove active-speaker analysis.
 - A robust face tracker or ASD engine may already handle some cut behavior.
 
-**Decision:** integrate when observed face-track failures at cuts or shot-aware segment rules justify
-it.
+**Decision:** integrate `ContentDetector` with the active-speaker extra because candidate runs must
+not cross cuts when DeepTalk reuses a local track ID. Reuse the frames already sampled from PyAV
+instead of decoding the video again.
 
 Official repository: [PySceneDetect](https://github.com/Breakthrough/PySceneDetect).
 
@@ -1025,8 +1026,7 @@ The current implementation order is:
 5. Use MediaPipe for face suitability, pose, and diagnostics—not for deciding who produced the
    audio.
 6. Add SyncNet as a separate explicit synchronization capability once active-speaker output works.
-7. Add pyannote, PySceneDetect, or dedicated gaze models only after real failures demonstrate their
-   need.
+7. Add pyannote or dedicated gaze models only after real failures demonstrate their need.
 
 ### 8.3 Why this is not “reinventing the wheel”
 
@@ -1482,8 +1482,7 @@ Preferred strategy:
 - Select one active-speaker engine.
 - Use ONNX Runtime where it materially reduces PyTorch/CUDA complexity.
 - Keep visual-quality and synchronization backends optional.
-- Do not add pyannote, PySceneDetect, a gaze framework, OpenCV, and PyTorch merely because they may
-  become useful later.
+- Do not add pyannote, a gaze framework, or PyTorch merely because they may become useful later.
 - Add dependencies only when a tested vertical slice needs them.
 
 Possible optional groups eventually could resemble:

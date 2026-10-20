@@ -559,7 +559,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
       }
       for (const boundary of REPORT.shotBoundaries) {
         timelineContext.fillStyle = "#45d6e8";
-        timelineContext.fillRect(x(boundary[0]) - 1, top, 2, plotHeight);
+        timelineContext.fillRect(x(boundary) - 1, top, 2, plotHeight);
       }
       const clampedTime = Math.max(REPORT.interval.start, Math.min(REPORT.interval.end, sourceTime));
       timelineContext.strokeStyle = "#f3f5f7";
@@ -725,7 +725,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
         const line = document.createElement("span");
         line.className = "legend-line";
         line.style.background = "#45d6e8";
-        item.append(line, "Shot boundary");
+        item.append(line, "Scene cut");
         legend.appendChild(item);
       }
     }
@@ -772,7 +772,7 @@ def render_active_speaker_report(
     The report contains the analysis data and UI code in one HTML file. It references the original
     local video through a file URL instead of copying or re-encoding media. Playback time drives
     face boxes, raw head-pose and quality evidence, raw-score windows, VAD state, audio-repair
-    markers, hard-shot boundaries, and the chart cursor. The largest raw score during a
+    markers, scene-cut boundaries, and the chart cursor. The largest raw score during a
     non-rejected speech interval is labelled only as a ``top candidate``. Pose and quality remain
     diagnostic backend values without acceptance thresholds.
 
@@ -900,10 +900,7 @@ def _build_report_payload(
         )
     ]
     shot_boundaries = [
-        [
-            _rounded(boundary.source_timestamp_seconds),
-            _rounded(boundary.changed_pixel_fraction),
-        ]
+        _rounded(boundary.source_timestamp_seconds)
         for boundary in sorted(
             result.shot_boundaries,
             key=lambda item: item.source_timestamp_seconds,

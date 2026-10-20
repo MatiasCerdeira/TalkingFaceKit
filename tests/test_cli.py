@@ -297,7 +297,7 @@ def test_analyzes_active_speakers_and_prints_a_readable_summary(
             ),
         ),
         provenance=DeepTalkAnalysisProvenance(backend_version="0.3.1"),
-        shot_boundaries=(DeepTalkShotBoundary(0.55, 0.625),),
+        shot_boundaries=(DeepTalkShotBoundary(0.55),),
         audio_timeline_repairs=(
             DeepTalkAudioTimelineRepair(
                 kind="audio_gap_filled",
@@ -384,7 +384,7 @@ def test_analyzes_active_speakers_and_prints_a_readable_summary(
     output = capsys.readouterr().out
     assert "backend: DeepTalk-ASD 0.3.1" in output
     assert "face IDs: [7]" in output
-    assert "0.550 changed_pixels=62.5%" in output
+    assert "scene cut boundaries:\n  0.550" in output
     assert "[0.600, 1.400) confirmed" in output
     assert "face_7=+1.250, face_9=-0.500" in output
     assert (

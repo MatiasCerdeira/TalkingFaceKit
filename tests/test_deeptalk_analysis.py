@@ -152,27 +152,25 @@ def test_analyzes_one_sequence_on_a_single_source_relative_timeline(
     assert result.score_windows[1].raw_scores[7] == 1.75
 
 
-def test_hard_shot_detection_preserves_the_source_timeline_timestamp(
+def test_content_detector_finds_a_scene_cut_on_the_source_timeline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    sequence = make_sequence(start_seconds=10.0, end_seconds=10.08)
+    pytest.importorskip("scenedetect")
+    sequence = make_sequence(start_seconds=10.0, end_seconds=11.6)
     frames = [
         (
-            10.0,
+            10.0 + index / 25,
             DecodedVideoFrame(
-                frame_index=300,
-                timestamp_seconds=10.0,
-                rgb=np.zeros((4, 4, 3), dtype=np.uint8),
+                frame_index=300 + index,
+                timestamp_seconds=10.0 + index / 25,
+                rgb=np.full(
+                    (32, 48, 3),
+                    (255, 0, 0) if index < 20 else (255, 255, 255),
+                    dtype=np.uint8,
+                ),
             ),
-        ),
-        (
-            10.04,
-            DecodedVideoFrame(
-                frame_index=301,
-                timestamp_seconds=10.04,
-                rgb=np.full((4, 4, 3), 255, dtype=np.uint8),
-            ),
-        ),
+        )
+        for index in range(40)
     ]
     module = ModuleType("fake_deeptalk")
     module.VideoBufferType = SimpleNamespace(RGB24="rgb24")  # type: ignore[attr-defined]
@@ -182,10 +180,9 @@ def test_hard_shot_detection_preserves_the_source_timeline_timestamp(
 
     events = list(deeptalk._iter_deeptalk_video_frames(sequence, module, boundaries))
 
-    assert [timestamp for timestamp, _ in events] == pytest.approx([0.0, 0.04])
+    assert [events[0][0], events[-1][0]] == pytest.approx([0.0, 1.56])
     assert len(boundaries) == 1
-    assert boundaries[0].source_timestamp_seconds == pytest.approx(10.04)
-    assert boundaries[0].changed_pixel_fraction == 1.0
+    assert boundaries[0].source_timestamp_seconds == pytest.approx(10.8)
 
 
 def test_keeps_a_final_partial_score_window(monkeypatch: pytest.MonkeyPatch) -> None:

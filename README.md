@@ -216,12 +216,12 @@ El resultado también contiene una primera clasificación conservadora por subin
   positivo.
 
 Cada segmento incluye razones machine-readable, los IDs observados y el score sin modificar. Un
-`candidate` preliminar no es todavía un clip aceptado. TalkingFaceKit también detecta cortes duros
-comparando thumbnails de luminancia de frames consecutivos en la misma grilla de 25 Hz. Un corte se
-registra cuando al menos 15% de los pixels cambian 20 o más niveles de luminancia de 8 bits. Su
-timestamp de fuente y fracción observada quedan en `shot_boundaries`; los intervalos preliminares se
-dividen allí y dos candidatos nunca se unen a través del corte, aunque DeepTalk reutilice el mismo
-`face_id`. Esta regla cubre cortes duros, no fades ni identidad biométrica.
+`candidate` preliminar no es todavía un clip aceptado. TalkingFaceKit detecta cortes de escena con
+`ContentDetector` de PySceneDetect usando sus valores por defecto. El detector recibe los mismos
+frames ya decodificados y muestreados a 25 Hz para DeepTalk, sin abrir ni decodificar el video otra
+vez, y compara cambios de color e intensidad en vez de limitarse a frames negros. El timestamp de
+fuente queda en `shot_boundaries`; los intervalos preliminares se dividen allí y dos candidatos
+nunca se unen a través del corte, aunque DeepTalk reutilice el mismo `face_id`.
 
 Los candidatos adyacentes de la misma identidad dentro de un mismo plano se unen luego en
 `candidate_runs` continuos. La política temporal también puede unir dos candidatos separados por un

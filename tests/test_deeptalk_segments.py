@@ -52,7 +52,7 @@ def make_result(
         ),
         provenance=DeepTalkAnalysisProvenance(backend_version="0.3.1"),
         shot_boundaries=tuple(
-            DeepTalkShotBoundary(timestamp, 0.5) for timestamp in shot_boundary_timestamps
+            DeepTalkShotBoundary(timestamp) for timestamp in shot_boundary_timestamps
         ),
     )
 
@@ -128,7 +128,7 @@ def make_run_result(
         score_windows=(),
         provenance=DeepTalkAnalysisProvenance(backend_version="0.3.1"),
         shot_boundaries=tuple(
-            DeepTalkShotBoundary(timestamp, 0.5) for timestamp in shot_boundary_timestamps
+            DeepTalkShotBoundary(timestamp) for timestamp in shot_boundary_timestamps
         ),
         preliminary_segments=segments,
     )
@@ -508,7 +508,7 @@ def test_preserves_source_timestamps_when_splitting_at_a_shot_boundary() -> None
         speech_intervals=(DeepTalkSpeechInterval(10.0, 12.0, "confirmed"),),
         score_windows=(DeepTalkScoreWindow(10.0, 12.0, {7: 1.25}),),
         provenance=DeepTalkAnalysisProvenance(backend_version="0.3.1"),
-        shot_boundaries=(DeepTalkShotBoundary(10.75, 0.5),),
+        shot_boundaries=(DeepTalkShotBoundary(10.75),),
     )
 
     segments = build_preliminary_segments(result)

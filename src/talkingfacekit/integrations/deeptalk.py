@@ -30,10 +30,6 @@ _DEEPTALK_SUPPORTED_VERSION = "0.3.1"
 _VIDEO_FPS = 25
 _FRAME_PERIOD_SECONDS = 1 / _VIDEO_FPS
 _VIDEO_TIMESTAMP_TOLERANCE_SECONDS = 1e-9
-_SHOT_THUMBNAIL_ROWS = 36
-_SHOT_THUMBNAIL_COLUMNS = 64
-_SHOT_LUMINANCE_DELTA = 20
-_SHOT_CHANGED_PIXEL_FRACTION = 0.15
 _AUDIO_SAMPLE_RATE_HZ = 16_000
 _AUDIO_FRAME_SAMPLE_COUNT = 480
 _AUDIO_REPAIR_BLOCK_SAMPLE_COUNT = 8_192
@@ -237,37 +233,28 @@ class DeepTalkAnalysisProvenance:
 
 @dataclass(frozen=True, slots=True)
 class DeepTalkShotBoundary:
-    """Record one TalkingFaceKit hard-cut observation on the source timeline.
+    """Record one PySceneDetect scene cut on the source timeline.
 
     Parameters
     ----------
     source_timestamp_seconds
-        Timestamp of the sampled 25 Hz video slot whose pixels first satisfy the hard-cut rule, in
+        Timestamp of the sampled 25 Hz video slot where ``ContentDetector`` found the cut, in
         seconds on the original source-media timeline.
-    changed_pixel_fraction
-        Fraction of pixels on an at-most-36-by-64 luminance thumbnail whose 8-bit luminance changed
-        by at least 20 levels from the preceding sampled frame.
 
     Raises
     ------
     ValueError
-        If the timestamp is invalid or the changed-pixel fraction is outside ``[0, 1]``.
+        If the timestamp is invalid.
     """
 
     source_timestamp_seconds: float
-    changed_pixel_fraction: float
 
     def __post_init__(self) -> None:
-        """Validate source time and the normalized frame-change measurement."""
+        """Validate the source timestamp."""
         if not math.isfinite(self.source_timestamp_seconds) or self.source_timestamp_seconds < 0:
             raise ValueError(
                 "shot boundary source_timestamp_seconds must be finite and non-negative"
             )
-        if (
-            not math.isfinite(self.changed_pixel_fraction)
-            or not 0 <= self.changed_pixel_fraction <= 1
-        ):
-            raise ValueError("shot boundary changed_pixel_fraction must be finite and in [0, 1]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -551,8 +538,8 @@ class DeepTalkAnalysisResult:
     provenance
         Backend version, fixed media rates, and optional capability status.
     shot_boundaries
-        Hard cuts detected by TalkingFaceKit from adjacent sampled video frames. These boundaries
-        are independent of DeepTalk face-track IDs and remain on the source-media timeline.
+        Scene cuts detected by PySceneDetect from the frames already sampled for DeepTalk. These
+        boundaries are independent of DeepTalk face-track IDs and remain on the source timeline.
     audio_timeline_repairs
         Explicit gap fills and overlap trims applied before resampling for DeepTalk.
     issues
@@ -582,7 +569,7 @@ def build_preliminary_segments(
 ) -> tuple[DeepTalkPreliminarySegment, ...]:
     """Build conservative pre-calibration decisions from one DeepTalk result.
 
-    Each raw score window is split at non-rejected VAD boundaries and hard shot boundaries.
+    Each raw score window is split at non-rejected VAD boundaries and scene-cut boundaries.
     Non-speech, no-face, multi-face, changing-identity, and non-positive-score regions are rejected.
     A sole visible face with speech but no corresponding score is uncertain. Only speech regions
     with one identity and a positive raw score become candidates, and candidates still require all
@@ -670,7 +657,7 @@ def build_candidate_runs(
     Adjacent candidates for the same face are merged within one shot. A short rejected interval can
     also be bridged when it contains only an ASD-negative or brief no-speech decision, the same sole
     face remains sufficiently visible, and positive ASD evidence resumes immediately afterward.
-    Raw preliminary decisions remain unchanged. Shot boundaries, ambiguity, identity changes,
+    Raw preliminary decisions remain unchanged. Scene cuts, ambiguity, identity changes,
     missing evidence, excessive duration, or unstable visibility always prevent bridging.
 
     Parameters
@@ -1257,44 +1244,19 @@ def _iter_deeptalk_video_frames(
     deeptalk_module: ModuleType,
     shot_boundaries: list[DeepTalkShotBoundary],
 ) -> Iterator[tuple[float, object]]:
-    previous_luminance: NDArray[np.int16] | None = None
+    scene_detect = cast(Any, import_module("scenedetect"))
+    content_detector = cast(Any, import_module("scenedetect.detectors")).ContentDetector()
     for source_timestamp_seconds, source_frame in _sample_video_frames_25_fps(sequence):
-        luminance = _shot_luminance_thumbnail(source_frame.rgb)
-        if previous_luminance is not None:
-            changed_pixel_fraction = float(
-                np.mean(np.abs(luminance - previous_luminance) >= _SHOT_LUMINANCE_DELTA)
-            )
-            if changed_pixel_fraction >= _SHOT_CHANGED_PIXEL_FRACTION:
-                shot_boundaries.append(
-                    DeepTalkShotBoundary(
-                        source_timestamp_seconds=source_timestamp_seconds,
-                        changed_pixel_fraction=changed_pixel_fraction,
-                    )
-                )
-        previous_luminance = luminance
         relative_timestamp_seconds = source_timestamp_seconds - sequence.start_seconds
+        frame_number = round(relative_timestamp_seconds * _VIDEO_FPS)
+        cuts = content_detector.process_frame(
+            scene_detect.FrameTimecode(frame_number, fps=float(_VIDEO_FPS)),
+            np.ascontiguousarray(source_frame.rgb[..., ::-1]),
+        )
+        shot_boundaries.extend(
+            DeepTalkShotBoundary(sequence.start_seconds + float(cut.seconds)) for cut in cuts
+        )
         yield relative_timestamp_seconds, _to_deeptalk_video_frame(source_frame, deeptalk_module)
-
-
-def _shot_luminance_thumbnail(rgb: NDArray[np.uint8]) -> NDArray[np.int16]:
-    """Reduce one RGB frame to the fixed luminance grid used for hard-cut comparison."""
-    row_indices = np.linspace(
-        0,
-        rgb.shape[0] - 1,
-        min(_SHOT_THUMBNAIL_ROWS, rgb.shape[0]),
-        dtype=np.intp,
-    )
-    column_indices = np.linspace(
-        0,
-        rgb.shape[1] - 1,
-        min(_SHOT_THUMBNAIL_COLUMNS, rgb.shape[1]),
-        dtype=np.intp,
-    )
-    thumbnail = rgb[np.ix_(row_indices, column_indices)].astype(np.int32)
-    luminance = (
-        77 * thumbnail[:, :, 0] + 150 * thumbnail[:, :, 1] + 29 * thumbnail[:, :, 2]
-    ) // 256
-    return cast(NDArray[np.int16], luminance.astype(np.int16))
 
 
 def _to_deeptalk_video_frame(

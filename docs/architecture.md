@@ -199,7 +199,7 @@ The optional demo report lives under `talkingfacekit.demo`, outside the core and
 surface. It serializes copied DeepTalk observations into one offline HTML document and references
 the unchanged local video by file URL. Browser playback time is the only synchronization clock for
 boxes, pose, raw quality, VAD state, raw scores, preliminary decisions, continuous candidate-run
-decisions, hard-shot and repair markers, and the diagnostic timeline. The report labels the largest
+decisions, scene-cut and repair markers, and the diagnostic timeline. The report labels the largest
 score during speech as a `top candidate`; it does not add a probability or accepted
 training-segment decision.
 It also derives a clickable review list from the same immutable evidence, labelling regions as
@@ -220,14 +220,13 @@ camera-facing or visual-suitability decision. Open-ended sequences report unequa
 do not retain face observations after audio coverage ends.
 
 The first TalkingFaceKit-owned policy is deliberately pre-calibration and remains represented by
-integration-specific immutable values while DeepTalk is the only evaluated backend. Alongside the
-DeepTalk input conversion, TalkingFaceKit compares consecutive 25 Hz frames on a fixed 36-by-64
-luminance thumbnail. A hard cut is recorded when at least 15% of those pixels change by 20 or more
-8-bit luminance levels. The source timestamp and observed fraction are copied into an immutable
-`DeepTalkShotBoundary`; this deliberately narrow detector does not claim to detect fades or physical
-identity.
+integration-specific immutable values while DeepTalk is the only evaluated backend. The existing
+25 Hz frames sampled from the shared PyAV stream are passed to PySceneDetect's `ContentDetector`
+with its defaults. Only RGB-to-BGR channel conversion is added; the source is not opened or decoded
+a second time. Each detected scene cut is copied into an immutable `DeepTalkShotBoundary` with its
+source timestamp.
 
-The policy splits score windows at active VAD and hard-shot boundaries and rejects regions with no
+The policy splits score windows at active VAD and scene-cut boundaries and rejects regions with no
 speech, no visible face, simultaneous faces, changing face identity, or a non-positive raw score. A
 missing score for one visible face is uncertain. One visible identity with a positive raw score is
 only a `candidate`; it is not accepted until later stages pass. These preliminary decisions and raw
@@ -245,7 +244,7 @@ silence when positive evidence never returns. Every retained gap is recorded in
 
 This prevents an isolated ASD failure from fragmenting a clip without treating VAD plus one visible
 face as proof of speaking, and it still prevents a reused DeepTalk local track ID from bridging a
-hard cut. The structural policy then measures duration, detection coverage against the 25 Hz grid,
+scene cut. The structural policy then measures duration, detection coverage against the 25 Hz grid,
 the largest interval without a face detection, and raw-score min/mean/max over positive candidate
 evidence. Initial defaults require two seconds, 90% coverage, and no visibility gap above 200
 milliseconds. They are explicit conservative starting values rather than calibrated guarantees;

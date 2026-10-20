@@ -292,14 +292,11 @@ def _print_active_speaker_summary(
     print(f"face IDs: {face_ids if face_ids else 'none'}")
     print(f"face observations: {len(result.face_observations)}")
 
-    print("hard shot boundaries:")
+    print("scene cut boundaries:")
     if not result.shot_boundaries:
         print("  none")
     for boundary in result.shot_boundaries:
-        print(
-            f"  {boundary.source_timestamp_seconds:.3f} "
-            f"changed_pixels={boundary.changed_pixel_fraction:.1%}"
-        )
+        print(f"  {boundary.source_timestamp_seconds:.3f}")
 
     print("speech intervals:")
     if not result.speech_intervals:
