@@ -219,8 +219,8 @@ _REPORT_TEMPLATE = r"""<!doctype html>
         <h2>Timeline sincronizada</h2>
         <div class="legend" id="legend"></div>
       </div>
-      <canvas id="timeline" role="img" aria-label="Raw scores por rostro, intervalos de voz, reparaciones de audio y posición actual"></canvas>
-      <div class="timeline-help">Hacé click en la timeline para saltar a ese instante. El fondo verde marca voz; las líneas verticales violetas marcan reparaciones del audio. La banda inferior muestra decisiones preliminares y, encima de las regiones elegibles, el resultado refinado del candidate run.</div>
+      <canvas id="timeline" role="img" aria-label="Raw scores por rostro, intervalos de voz, cortes de plano, reparaciones de audio y posición actual"></canvas>
+      <div class="timeline-help">Hacé click en la timeline para saltar a ese instante. El fondo verde marca voz; las líneas verticales celestes marcan cortes de plano y las violetas, reparaciones del audio. La banda inferior conserva la decisión preliminar instantánea; la banda separada justo encima muestra el candidate run final después de aplicar continuidad temporal.</div>
     </section>
     <section class="panel decision-summary" aria-label="Resumen de decisiones por segmento">
       <div class="decision-summary-head">
@@ -410,9 +410,19 @@ _REPORT_TEMPLATE = r"""<!doctype html>
         if (evidence.candidateRun) {
           const run = evidence.candidateRun;
           const status = run[2];
+          const bridgedGap = containingInterval(run[13], sourceTime);
           segmentDecision.classList.add(status === "candidate" ? "keep" : "rejected");
-          candidateTitle.textContent = `${status === "candidate" ? "CONSERVAR" : "DESCARTAR"} · Face ${run[3]}`;
-          candidateDetail.textContent = `${formatReasons(run[4])} · duración ${run[5].toFixed(2)}s (mín. ${REPORT.candidatePolicy.minimumDurationSeconds.toFixed(2)}s) · cobertura ${(run[6] * 100).toFixed(1)}% (${run[11]}/${run[12]}, mín. ${(REPORT.candidatePolicy.minimumFaceCoverage * 100).toFixed(1)}%) · hueco máx. ${run[7].toFixed(3)}s (límite ${REPORT.candidatePolicy.maximumFaceGapSeconds.toFixed(3)}s)`;
+          const finalDecision = status === "candidate" ? "CONSERVAR" : "DESCARTAR";
+          candidateTitle.textContent = bridgedGap
+            ? `${finalDecision} POR CONTINUIDAD · Face ${run[3]}`
+            : `${finalDecision} · Face ${run[3]}`;
+          const instantaneous = bridgedGap && evidence.preliminarySegment
+            ? ` · evidencia instantánea: ${formatReasons(evidence.preliminarySegment[4])}`
+            : "";
+          const bridgeSummary = run[13].length
+            ? ` · puentes ${run[13].length} (${run[13].reduce((total, gap) => total + gap[1] - gap[0], 0).toFixed(2)}s)`
+            : "";
+          candidateDetail.textContent = `${formatReasons(run[4])}${instantaneous}${bridgeSummary} · duración ${run[5].toFixed(2)}s (mín. ${REPORT.candidatePolicy.minimumDurationSeconds.toFixed(2)}s) · cobertura ${(run[6] * 100).toFixed(1)}% (${run[11]}/${run[12]}, mín. ${(REPORT.candidatePolicy.minimumFaceCoverage * 100).toFixed(1)}%) · hueco máx. ${run[7].toFixed(3)}s (límite ${REPORT.candidatePolicy.maximumFaceGapSeconds.toFixed(3)}s)`;
         } else if (evidence.preliminarySegment) {
           const segment = evidence.preliminarySegment;
           const status = segment[2];
@@ -508,7 +518,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
       }
       for (const run of REPORT.candidateRuns) {
         timelineContext.fillStyle = run[2] === "candidate" ? "#42c68a" : "#f06a6a";
-        timelineContext.fillRect(x(run[0]), top + plotHeight - 7, x(run[1]) - x(run[0]), 7);
+        timelineContext.fillRect(x(run[0]), top + plotHeight - 16, x(run[1]) - x(run[0]), 7);
       }
       timelineContext.strokeStyle = "#353c46";
       timelineContext.lineWidth = 1;
@@ -547,6 +557,10 @@ _REPORT_TEMPLATE = r"""<!doctype html>
         }
         timelineContext.stroke();
       }
+      for (const boundary of REPORT.shotBoundaries) {
+        timelineContext.fillStyle = "#45d6e8";
+        timelineContext.fillRect(x(boundary) - 1, top, 2, plotHeight);
+      }
       const clampedTime = Math.max(REPORT.interval.start, Math.min(REPORT.interval.end, sourceTime));
       timelineContext.strokeStyle = "#f3f5f7";
       timelineContext.lineWidth = 1.5;
@@ -583,6 +597,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
         maximumGap: run[7],
         observedCount: run[11],
         expectedCount: run[12],
+        bridgedGaps: run[13],
         kind: "run"
       }));
       for (const segment of REPORT.preliminarySegments) {
@@ -601,6 +616,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
           maximumGap: null,
           observedCount: null,
           expectedCount: null,
+          bridgedGaps: [],
           kind: "preliminary"
         });
       }
@@ -649,7 +665,8 @@ _REPORT_TEMPLATE = r"""<!doctype html>
         const label = decision.decision === "keep"
           ? "CONSERVAR"
           : decision.decision === "discard" ? "DESCARTAR" : "REVISAR";
-        primary.textContent = `${label}${decision.faceId === null ? "" : ` · Face ${decision.faceId}`}`;
+        const stage = decision.kind === "run" ? "FINAL" : "INSTANTÁNEO";
+        primary.textContent = `${stage}: ${label}${decision.faceId === null ? "" : ` · Face ${decision.faceId}`}`;
         const interval = document.createElement("span");
         interval.className = "decision-interval";
         interval.textContent = `${formatTime(decision.start)} – ${formatTime(decision.end)} · ${decision.duration.toFixed(2)}s`;
@@ -657,7 +674,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
         evidence.className = "decision-evidence";
         const metrics = decision.coverage === null
           ? ""
-          : ` · cobertura ${(decision.coverage * 100).toFixed(1)}% (${decision.observedCount}/${decision.expectedCount}) · hueco máx. ${decision.maximumGap.toFixed(3)}s`;
+          : ` · cobertura ${(decision.coverage * 100).toFixed(1)}% (${decision.observedCount}/${decision.expectedCount}) · hueco máx. ${decision.maximumGap.toFixed(3)}s${decision.bridgedGaps.length ? ` · puentes ${decision.bridgedGaps.map(gap => `${formatTime(gap[0])}–${formatTime(gap[1])}`).join(", ")}` : ""}`;
         evidence.textContent = `${formatReasons(decision.reasons)}${metrics}`;
         row.append(primary, interval, evidence);
         row.addEventListener("click", () => {
@@ -700,6 +717,15 @@ _REPORT_TEMPLATE = r"""<!doctype html>
         line.className = "legend-line";
         line.style.background = "#d474f2";
         item.append(line, "Audio repair");
+        legend.appendChild(item);
+      }
+      if (REPORT.shotBoundaries.length) {
+        const item = document.createElement("span");
+        item.className = "legend-item";
+        const line = document.createElement("span");
+        line.className = "legend-line";
+        line.style.background = "#45d6e8";
+        item.append(line, "Scene cut");
         legend.appendChild(item);
       }
     }
@@ -746,9 +772,9 @@ def render_active_speaker_report(
     The report contains the analysis data and UI code in one HTML file. It references the original
     local video through a file URL instead of copying or re-encoding media. Playback time drives
     face boxes, raw head-pose and quality evidence, raw-score windows, VAD state, audio-repair
-    markers, and the chart cursor. The largest raw score during a non-rejected speech interval is
-    labelled only as a ``top candidate``. Pose and quality remain diagnostic backend values without
-    acceptance thresholds.
+    markers, scene-cut boundaries, and the chart cursor. The largest raw score during a
+    non-rejected speech interval is labelled only as a ``top candidate``. Pose and quality remain
+    diagnostic backend values without acceptance thresholds.
 
     Parameters
     ----------
@@ -873,6 +899,13 @@ def _build_report_payload(
             key=lambda item: item.source_start_seconds,
         )
     ]
+    shot_boundaries = [
+        _rounded(boundary.source_timestamp_seconds)
+        for boundary in sorted(
+            result.shot_boundaries,
+            key=lambda item: item.source_timestamp_seconds,
+        )
+    ]
     preliminary_segments = [
         [
             _rounded(segment.source_start_seconds),
@@ -900,6 +933,10 @@ def _build_report_payload(
             _rounded(run.raw_score_max),
             run.face_observation_count,
             run.expected_face_observation_count,
+            [
+                [_rounded(start_seconds), _rounded(end_seconds)]
+                for start_seconds, end_seconds in run.bridged_gap_intervals
+            ],
         ]
         for run in result.candidate_runs
     ]
@@ -926,6 +963,7 @@ def _build_report_payload(
             "maximumFaceGapSeconds": _rounded(result.candidate_policy.maximum_face_gap_seconds),
         },
         "candidateRuns": candidate_runs,
+        "shotBoundaries": shot_boundaries,
         "repairs": repairs,
         "issues": list(result.issues),
         "backend": {

@@ -92,7 +92,8 @@ class DeepTalkFaceObservation:
     source_timestamp_seconds
         Timestamp of the 25 Hz source-timeline slot submitted to DeepTalk, in seconds.
     face_id
-        DeepTalk's stable face identity. The same identity keys score-window results.
+        DeepTalk's local face-track ID. The same ID keys score-window results, but it is not a
+        physical-person identity and can be reused after a track disappears.
     bounding_box_xywh
         Face rectangle ``(x, y, width, height)`` in source-frame pixels.
     head_pose_yaw_pitch_roll_degrees
@@ -138,7 +139,7 @@ class DeepTalkFaceObservation:
 class DeepTalkScoreWindow:
     """Preserve unchanged DeepTalk scores for one source-timeline window.
 
-    ``raw_scores`` contains DeepTalk's final score for each face identity. Values are not
+    ``raw_scores`` contains DeepTalk's final score for each local face-track ID. Values are not
     probabilities and are not thresholded or smoothed. An empty mapping is retained as evidence.
     The bounds are consecutive diagnostic bounds; DeepTalk 0.3.1 treats audio as half-open but
     includes video at both bounds, so a face at an exact boundary can affect adjacent windows.
@@ -150,7 +151,7 @@ class DeepTalkScoreWindow:
     source_end_seconds
         Nominal source-media end of the diagnostic window, in seconds.
     raw_scores
-        Immutable snapshot mapping DeepTalk face identities to unchanged scores.
+        Immutable snapshot mapping DeepTalk local face-track IDs to unchanged scores.
     """
 
     source_start_seconds: float
@@ -228,6 +229,32 @@ class DeepTalkAnalysisProvenance:
     video_sample_rate_hz: int = _VIDEO_FPS
     audio_sample_rate_hz: int = _AUDIO_SAMPLE_RATE_HZ
     speaker_embeddings_available: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DeepTalkShotBoundary:
+    """Record one PySceneDetect scene cut on the source timeline.
+
+    Parameters
+    ----------
+    source_timestamp_seconds
+        Timestamp of the sampled 25 Hz video slot where ``ContentDetector`` found the cut, in
+        seconds on the original source-media timeline.
+
+    Raises
+    ------
+    ValueError
+        If the timestamp is invalid.
+    """
+
+    source_timestamp_seconds: float
+
+    def __post_init__(self) -> None:
+        """Validate the source timestamp."""
+        if not math.isfinite(self.source_timestamp_seconds) or self.source_timestamp_seconds < 0:
+            raise ValueError(
+                "shot boundary source_timestamp_seconds must be finite and non-negative"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -363,11 +390,25 @@ class DeepTalkCandidatePolicy:
     These defaults are intentionally strict starting points for dataset curation, not calibrated
     guarantees. They are kept explicit so a future evaluation set can replace them without
     changing the evidence or run-building contracts.
+
+    Parameters
+    ----------
+    minimum_duration_seconds
+        Minimum final run duration, including any explicitly bridged temporal gaps.
+    minimum_face_coverage
+        Minimum fraction of expected 25 Hz observations for both final runs and bridgeable gaps.
+    maximum_face_gap_seconds
+        Maximum time without the same face being observed in a final run or bridgeable gap.
+    maximum_bridge_gap_seconds
+        Maximum rejected interval that may be bridged when positive ASD evidence for the same face
+        exists immediately before and after it. The same limit acts as offline look-ahead grace;
+        trailing rejected time is never added without later positive evidence.
     """
 
     minimum_duration_seconds: float = 2.0
     minimum_face_coverage: float = 0.90
     maximum_face_gap_seconds: float = 0.20
+    maximum_bridge_gap_seconds: float = 1.25
 
     def __post_init__(self) -> None:
         """Validate duration, coverage, and visibility-gap thresholds."""
@@ -377,16 +418,24 @@ class DeepTalkCandidatePolicy:
             raise ValueError("minimum_face_coverage must be finite and in (0, 1]")
         if not math.isfinite(self.maximum_face_gap_seconds) or self.maximum_face_gap_seconds < 0:
             raise ValueError("maximum_face_gap_seconds must be finite and non-negative")
+        if (
+            not math.isfinite(self.maximum_bridge_gap_seconds)
+            or self.maximum_bridge_gap_seconds < 0
+        ):
+            raise ValueError("maximum_bridge_gap_seconds must be finite and non-negative")
 
 
 @dataclass(frozen=True, slots=True)
 class DeepTalkCandidateRun:
     """Summarize one continuous same-face run after structural policy checks.
 
-    A run is formed only from adjacent preliminary candidates for the same DeepTalk face identity.
-    Passing this stage means the run is long enough and its face detections are sufficiently dense
-    and stable. It still requires camera-facing, visual-quality, synchronization, and calibrated
-    active-speaker checks before it can become an accepted training clip.
+    A run is formed from preliminary candidates for one DeepTalk face-track ID. Brief rejected gaps
+    may be retained only by the explicit temporal-continuity policy and remain listed in
+    ``bridged_gap_intervals``. Raw-score summary fields cover positive candidate evidence only;
+    unchanged negative scores remain in the preliminary segments and score windows. Passing this
+    stage means the run is long enough and its face detections are sufficiently dense and stable.
+    It still requires camera-facing, visual-quality, synchronization, and calibrated active-speaker
+    checks before it can become an accepted training clip.
     """
 
     source_start_seconds: float
@@ -402,6 +451,7 @@ class DeepTalkCandidateRun:
     raw_score_min: float
     raw_score_mean: float
     raw_score_max: float
+    bridged_gap_intervals: tuple[tuple[float, float], ...] = ()
 
     def __post_init__(self) -> None:
         """Validate source bounds, policy decision, observation metrics, and score summary."""
@@ -450,6 +500,21 @@ class DeepTalkCandidateRun:
             raise ValueError("candidate run raw score summary must be finite and positive")
         if not self.raw_score_min <= self.raw_score_mean <= self.raw_score_max:
             raise ValueError("candidate run raw score summary must satisfy min <= mean <= max")
+        previous_end_seconds = self.source_start_seconds
+        for interval in self.bridged_gap_intervals:
+            if len(interval) != 2:
+                raise ValueError("bridged gap intervals must contain start and end seconds")
+            start_seconds, end_seconds = interval
+            if (
+                not math.isfinite(start_seconds)
+                or not math.isfinite(end_seconds)
+                or start_seconds < self.source_start_seconds
+                or end_seconds > self.source_end_seconds
+                or end_seconds <= start_seconds
+                or start_seconds < previous_end_seconds
+            ):
+                raise ValueError("bridged gap intervals must be ordered within the candidate run")
+            previous_end_seconds = end_seconds
 
     @property
     def duration_seconds(self) -> float:
@@ -464,13 +529,17 @@ class DeepTalkAnalysisResult:
     Parameters
     ----------
     face_observations
-        Observed identities, boxes, raw head pose, and raw quality at submitted 25 Hz video slots.
+        Observed local track IDs, boxes, raw head pose, and raw quality at submitted 25 Hz video
+        slots.
     speech_intervals
         Completed, rejected, and EOF-truncated VAD intervals on the source timeline.
     score_windows
         Consecutive source-timeline windows containing unchanged DeepTalk scores.
     provenance
         Backend version, fixed media rates, and optional capability status.
+    shot_boundaries
+        Scene cuts detected by PySceneDetect from the frames already sampled for DeepTalk. These
+        boundaries are independent of DeepTalk face-track IDs and remain on the source timeline.
     audio_timeline_repairs
         Explicit gap fills and overlap trims applied before resampling for DeepTalk.
     issues
@@ -487,6 +556,7 @@ class DeepTalkAnalysisResult:
     speech_intervals: tuple[DeepTalkSpeechInterval, ...]
     score_windows: tuple[DeepTalkScoreWindow, ...]
     provenance: DeepTalkAnalysisProvenance
+    shot_boundaries: tuple[DeepTalkShotBoundary, ...] = ()
     audio_timeline_repairs: tuple[DeepTalkAudioTimelineRepair, ...] = ()
     issues: tuple[str, ...] = ()
     preliminary_segments: tuple[DeepTalkPreliminarySegment, ...] = ()
@@ -499,10 +569,11 @@ def build_preliminary_segments(
 ) -> tuple[DeepTalkPreliminarySegment, ...]:
     """Build conservative pre-calibration decisions from one DeepTalk result.
 
-    Each raw score window is split at non-rejected VAD boundaries. Non-speech, no-face,
-    multi-face, changing-identity, and non-positive-score regions are rejected. A sole visible face
-    with speech but no corresponding score is uncertain. Only speech regions with one identity and
-    a positive raw score become candidates, and candidates still require all later policy stages.
+    Each raw score window is split at non-rejected VAD boundaries and scene-cut boundaries.
+    Non-speech, no-face, multi-face, changing-identity, and non-positive-score regions are rejected.
+    A sole visible face with speech but no corresponding score is uncertain. Only speech regions
+    with one identity and a positive raw score become candidates, and candidates still require all
+    later policy stages.
 
     Parameters
     ----------
@@ -548,6 +619,13 @@ def build_preliminary_segments(
             ):
                 boundaries.add(max(window.source_start_seconds, interval.source_start_seconds))
                 boundaries.add(min(window.source_end_seconds, interval.source_end_seconds))
+        for shot_boundary in result.shot_boundaries:
+            if (
+                window.source_start_seconds
+                < shot_boundary.source_timestamp_seconds
+                < window.source_end_seconds
+            ):
+                boundaries.add(shot_boundary.source_timestamp_seconds)
 
         ordered_boundaries: list[float] = []
         for boundary in sorted(boundaries):
@@ -574,11 +652,13 @@ def build_candidate_runs(
     result: DeepTalkAnalysisResult,
     policy: DeepTalkCandidatePolicy | None = None,
 ) -> tuple[DeepTalkCandidateRun, ...]:
-    """Merge adjacent preliminary candidates and apply structural stability checks.
+    """Apply temporal continuity and structural stability checks to candidate evidence.
 
-    Only adjacent candidate segments belonging to the same face are merged. Rejected or uncertain
-    preliminary regions therefore form hard boundaries. The resulting run records duration, face
-    detection coverage, the longest missing-face gap, and a summary of the unchanged raw scores.
+    Adjacent candidates for the same face are merged within one shot. A short rejected interval can
+    also be bridged when it contains only an ASD-negative or brief no-speech decision, the same sole
+    face remains sufficiently visible, and positive ASD evidence resumes immediately afterward.
+    Raw preliminary decisions remain unchanged. Scene cuts, ambiguity, identity changes,
+    missing evidence, excessive duration, or unstable visibility always prevent bridging.
 
     Parameters
     ----------
@@ -600,26 +680,6 @@ def build_candidate_runs(
             f"policy must be a DeepTalkCandidatePolicy, got {type(resolved_policy).__name__}"
         )
 
-    merged_segments: list[list[DeepTalkPreliminarySegment]] = []
-    for segment in sorted(
-        result.preliminary_segments,
-        key=lambda item: (item.source_start_seconds, item.source_end_seconds),
-    ):
-        if segment.status != "candidate":
-            continue
-        if segment.face_id is None or segment.raw_score is None:
-            raise ValueError("candidate preliminary segments require a face ID and raw score")
-        if merged_segments:
-            previous = merged_segments[-1][-1]
-            gap_seconds = segment.source_start_seconds - previous.source_end_seconds
-            if (
-                previous.face_id == segment.face_id
-                and abs(gap_seconds) <= _VIDEO_TIMESTAMP_TOLERANCE_SECONDS
-            ):
-                merged_segments[-1].append(segment)
-                continue
-        merged_segments.append([segment])
-
     observations_by_face: dict[int, list[float]] = {}
     for observation in result.face_observations:
         observations_by_face.setdefault(observation.face_id, []).append(
@@ -627,6 +687,36 @@ def build_candidate_runs(
         )
     for timestamps in observations_by_face.values():
         timestamps.sort()
+
+    merged_segments: list[list[DeepTalkPreliminarySegment]] = []
+    pending_gap: list[DeepTalkPreliminarySegment] = []
+    for segment in sorted(
+        result.preliminary_segments,
+        key=lambda item: (item.source_start_seconds, item.source_end_seconds),
+    ):
+        if segment.status != "candidate":
+            if merged_segments:
+                pending_gap.append(segment)
+            continue
+        if segment.face_id is None or segment.raw_score is None:
+            raise ValueError("candidate preliminary segments require a face ID and raw score")
+        if merged_segments:
+            previous_candidate = merged_segments[-1][-1]
+            face_observation_timestamps = observations_by_face.get(segment.face_id, [])
+            if _can_join_candidate_segments(
+                result,
+                previous_candidate,
+                segment,
+                pending_gap,
+                face_observation_timestamps,
+                policy=resolved_policy,
+            ):
+                merged_segments[-1].extend(pending_gap)
+                merged_segments[-1].append(segment)
+                pending_gap = []
+                continue
+        merged_segments.append([segment])
+        pending_gap = []
 
     return tuple(
         _assess_candidate_run(
@@ -636,6 +726,59 @@ def build_candidate_runs(
             policy=resolved_policy,
         )
         for segments in merged_segments
+    )
+
+
+def _can_join_candidate_segments(
+    result: DeepTalkAnalysisResult,
+    previous: DeepTalkPreliminarySegment,
+    current: DeepTalkPreliminarySegment,
+    gap_segments: list[DeepTalkPreliminarySegment],
+    face_observation_timestamps: list[float],
+    *,
+    policy: DeepTalkCandidatePolicy,
+) -> bool:
+    """Return whether two positive ASD segments have safe temporal continuity."""
+    if previous.face_id != current.face_id:
+        return False
+    gap_start_seconds = previous.source_end_seconds
+    gap_end_seconds = current.source_start_seconds
+    gap_duration_seconds = gap_end_seconds - gap_start_seconds
+    if any(
+        gap_start_seconds - _VIDEO_TIMESTAMP_TOLERANCE_SECONDS
+        <= boundary.source_timestamp_seconds
+        <= gap_end_seconds + _VIDEO_TIMESTAMP_TOLERANCE_SECONDS
+        for boundary in result.shot_boundaries
+    ):
+        return False
+    if gap_duration_seconds <= _VIDEO_TIMESTAMP_TOLERANCE_SECONDS:
+        return not gap_segments
+    if (
+        not gap_segments
+        or gap_duration_seconds
+        > policy.maximum_bridge_gap_seconds + _VIDEO_TIMESTAMP_TOLERANCE_SECONDS
+    ):
+        return False
+
+    face_id = cast(int, previous.face_id)
+    bridgeable_reasons = {
+        ("non_positive_active_speaker_score",),
+        ("no_speech",),
+    }
+    if any(
+        segment.visible_face_ids != (face_id,) or segment.reason_codes not in bridgeable_reasons
+        for segment in gap_segments
+    ):
+        return False
+    _, _, visibility_fraction, maximum_gap_seconds = _face_visibility_metrics(
+        face_observation_timestamps,
+        start_seconds=gap_start_seconds,
+        end_seconds=gap_end_seconds,
+        video_sample_rate_hz=result.provenance.video_sample_rate_hz,
+    )
+    return (
+        visibility_fraction >= policy.minimum_face_coverage
+        and maximum_gap_seconds <= policy.maximum_face_gap_seconds
     )
 
 
@@ -649,6 +792,74 @@ def _assess_candidate_run(
     start_seconds = segments[0].source_start_seconds
     end_seconds = segments[-1].source_end_seconds
     face_id = cast(int, segments[0].face_id)
+    duration_seconds = end_seconds - start_seconds
+    (
+        face_observation_count,
+        expected_observation_count,
+        visibility_fraction,
+        maximum_gap_seconds,
+    ) = _face_visibility_metrics(
+        face_observation_timestamps,
+        start_seconds=start_seconds,
+        end_seconds=end_seconds,
+        video_sample_rate_hz=video_sample_rate_hz,
+    )
+    reason_codes: list[_CandidateRunReason] = []
+    if duration_seconds < policy.minimum_duration_seconds:
+        reason_codes.append("candidate_too_short")
+    if visibility_fraction < policy.minimum_face_coverage:
+        reason_codes.append("insufficient_face_coverage")
+    if maximum_gap_seconds > policy.maximum_face_gap_seconds:
+        reason_codes.append("unstable_face_visibility")
+    status: _CandidateRunStatus = "rejected" if reason_codes else "candidate"
+    if not reason_codes:
+        reason_codes.append("structural_policy_passed")
+
+    candidate_segments = [segment for segment in segments if segment.status == "candidate"]
+    raw_scores = [cast(float, segment.raw_score) for segment in candidate_segments]
+    scored_duration_seconds = sum(
+        segment.source_end_seconds - segment.source_start_seconds for segment in candidate_segments
+    )
+    duration_weighted_score = (
+        sum(
+            cast(float, segment.raw_score)
+            * (segment.source_end_seconds - segment.source_start_seconds)
+            for segment in candidate_segments
+        )
+        / scored_duration_seconds
+    )
+    bridged_gap_intervals = tuple(
+        (previous.source_end_seconds, current.source_start_seconds)
+        for previous, current in pairwise(candidate_segments)
+        if current.source_start_seconds - previous.source_end_seconds
+        > _VIDEO_TIMESTAMP_TOLERANCE_SECONDS
+    )
+    return DeepTalkCandidateRun(
+        source_start_seconds=start_seconds,
+        source_end_seconds=end_seconds,
+        status=status,
+        face_id=face_id,
+        reason_codes=tuple(reason_codes),
+        preliminary_segment_count=len(segments),
+        face_observation_count=face_observation_count,
+        expected_face_observation_count=expected_observation_count,
+        face_visibility_fraction=visibility_fraction,
+        maximum_face_gap_seconds=maximum_gap_seconds,
+        raw_score_min=min(raw_scores),
+        raw_score_mean=duration_weighted_score,
+        raw_score_max=max(raw_scores),
+        bridged_gap_intervals=bridged_gap_intervals,
+    )
+
+
+def _face_visibility_metrics(
+    face_observation_timestamps: list[float],
+    *,
+    start_seconds: float,
+    end_seconds: float,
+    video_sample_rate_hz: int,
+) -> tuple[int, int, float, float]:
+    """Measure expected and observed same-face coverage and its largest gap."""
     duration_seconds = end_seconds - start_seconds
     first_observation = bisect_left(face_observation_timestamps, start_seconds)
     after_last_observation = bisect_left(face_observation_timestamps, end_seconds)
@@ -673,41 +884,11 @@ def _assess_candidate_run(
         maximum_gap_seconds = max(visibility_gaps)
     else:
         maximum_gap_seconds = duration_seconds
-
-    reason_codes: list[_CandidateRunReason] = []
-    if duration_seconds < policy.minimum_duration_seconds:
-        reason_codes.append("candidate_too_short")
-    if visibility_fraction < policy.minimum_face_coverage:
-        reason_codes.append("insufficient_face_coverage")
-    if maximum_gap_seconds > policy.maximum_face_gap_seconds:
-        reason_codes.append("unstable_face_visibility")
-    status: _CandidateRunStatus = "rejected" if reason_codes else "candidate"
-    if not reason_codes:
-        reason_codes.append("structural_policy_passed")
-
-    raw_scores = [cast(float, segment.raw_score) for segment in segments]
-    duration_weighted_score = (
-        sum(
-            cast(float, segment.raw_score)
-            * (segment.source_end_seconds - segment.source_start_seconds)
-            for segment in segments
-        )
-        / duration_seconds
-    )
-    return DeepTalkCandidateRun(
-        source_start_seconds=start_seconds,
-        source_end_seconds=end_seconds,
-        status=status,
-        face_id=face_id,
-        reason_codes=tuple(reason_codes),
-        preliminary_segment_count=len(segments),
-        face_observation_count=len(observed_timestamps),
-        expected_face_observation_count=expected_observation_count,
-        face_visibility_fraction=visibility_fraction,
-        maximum_face_gap_seconds=maximum_gap_seconds,
-        raw_score_min=min(raw_scores),
-        raw_score_mean=duration_weighted_score,
-        raw_score_max=max(raw_scores),
+    return (
+        len(observed_timestamps),
+        expected_observation_count,
+        visibility_fraction,
+        maximum_gap_seconds,
     )
 
 
@@ -865,7 +1046,12 @@ def analyze_sequence(
 
     deeptalk_module = _load_deeptalk_module()
     detector = _create_deeptalk_detector(deeptalk_module)
-    video_events = _iter_deeptalk_video_frames(sequence, deeptalk_module)
+    shot_boundaries: list[DeepTalkShotBoundary] = []
+    video_events = _iter_deeptalk_video_frames(
+        sequence,
+        deeptalk_module,
+        shot_boundaries,
+    )
     audio_timeline_repairs: list[DeepTalkAudioTimelineRepair] = []
     audio_events = _iter_deeptalk_audio_frames(
         sequence,
@@ -982,6 +1168,7 @@ def analyze_sequence(
         provenance=DeepTalkAnalysisProvenance(
             backend_version=_DEEPTALK_SUPPORTED_VERSION,
         ),
+        shot_boundaries=tuple(shot_boundaries),
         audio_timeline_repairs=tuple(audio_timeline_repairs),
         issues=tuple(issues),
     )
@@ -1055,9 +1242,20 @@ def _sample_video_frames_25_fps(
 def _iter_deeptalk_video_frames(
     sequence: TalkingFaceSequence,
     deeptalk_module: ModuleType,
+    shot_boundaries: list[DeepTalkShotBoundary],
 ) -> Iterator[tuple[float, object]]:
+    scene_detect = cast(Any, import_module("scenedetect"))
+    content_detector = cast(Any, import_module("scenedetect.detectors")).ContentDetector()
     for source_timestamp_seconds, source_frame in _sample_video_frames_25_fps(sequence):
         relative_timestamp_seconds = source_timestamp_seconds - sequence.start_seconds
+        frame_number = round(relative_timestamp_seconds * _VIDEO_FPS)
+        cuts = content_detector.process_frame(
+            scene_detect.FrameTimecode(frame_number, fps=float(_VIDEO_FPS)),
+            np.ascontiguousarray(source_frame.rgb[..., ::-1]),
+        )
+        shot_boundaries.extend(
+            DeepTalkShotBoundary(sequence.start_seconds + float(cut.seconds)) for cut in cuts
+        )
         yield relative_timestamp_seconds, _to_deeptalk_video_frame(source_frame, deeptalk_module)
 
 

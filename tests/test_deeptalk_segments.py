@@ -1,3 +1,4 @@
+from dataclasses import replace
 from typing import Literal
 
 import pytest
@@ -9,6 +10,7 @@ from talkingfacekit.integrations.deeptalk import (
     DeepTalkFaceObservation,
     DeepTalkPreliminarySegment,
     DeepTalkScoreWindow,
+    DeepTalkShotBoundary,
     DeepTalkSpeechInterval,
     build_candidate_runs,
     build_preliminary_segments,
@@ -30,6 +32,7 @@ def make_result(
     faces: tuple[DeepTalkFaceObservation, ...],
     raw_scores: dict[int, float],
     speech_status: Literal["confirmed", "rejected", "incomplete"] = "confirmed",
+    shot_boundary_timestamps: tuple[float, ...] = (),
 ) -> DeepTalkAnalysisResult:
     return DeepTalkAnalysisResult(
         face_observations=faces,
@@ -48,6 +51,9 @@ def make_result(
             ),
         ),
         provenance=DeepTalkAnalysisProvenance(backend_version="0.3.1"),
+        shot_boundaries=tuple(
+            DeepTalkShotBoundary(timestamp) for timestamp in shot_boundary_timestamps
+        ),
     )
 
 
@@ -68,16 +74,62 @@ def make_candidate_segment(
     )
 
 
+def make_rejected_gap(
+    start_seconds: float,
+    end_seconds: float,
+    *,
+    reason: Literal[
+        "non_positive_active_speaker_score",
+        "no_speech",
+        "multiple_visible_faces",
+    ],
+    face_id: int = 7,
+) -> DeepTalkPreliminarySegment:
+    if reason == "non_positive_active_speaker_score":
+        return DeepTalkPreliminarySegment(
+            source_start_seconds=start_seconds,
+            source_end_seconds=end_seconds,
+            status="rejected",
+            face_id=face_id,
+            reason_codes=(reason,),
+            visible_face_ids=(face_id,),
+            raw_score=-0.5,
+        )
+    if reason == "multiple_visible_faces":
+        return DeepTalkPreliminarySegment(
+            source_start_seconds=start_seconds,
+            source_end_seconds=end_seconds,
+            status="rejected",
+            face_id=None,
+            reason_codes=(reason,),
+            visible_face_ids=(face_id, face_id + 1),
+            raw_score=None,
+        )
+    return DeepTalkPreliminarySegment(
+        source_start_seconds=start_seconds,
+        source_end_seconds=end_seconds,
+        status="rejected",
+        face_id=None,
+        reason_codes=(reason,),
+        visible_face_ids=(face_id,),
+        raw_score=None,
+    )
+
+
 def make_run_result(
     *,
     observations: tuple[DeepTalkFaceObservation, ...],
     segments: tuple[DeepTalkPreliminarySegment, ...],
+    shot_boundary_timestamps: tuple[float, ...] = (),
 ) -> DeepTalkAnalysisResult:
     return DeepTalkAnalysisResult(
         face_observations=observations,
         speech_intervals=(),
         score_windows=(),
         provenance=DeepTalkAnalysisProvenance(backend_version="0.3.1"),
+        shot_boundaries=tuple(
+            DeepTalkShotBoundary(timestamp) for timestamp in shot_boundary_timestamps
+        ),
         preliminary_segments=segments,
     )
 
@@ -244,6 +296,227 @@ def test_merges_adjacent_same_face_candidates_and_summarizes_evidence() -> None:
     assert run.face_visibility_fraction == 1.0
     assert run.maximum_face_gap_seconds == pytest.approx(0.0, abs=1e-12)
     assert (run.raw_score_min, run.raw_score_mean, run.raw_score_max) == (1.0, 1.5, 2.0)
+    assert run.bridged_gap_intervals == ()
+
+
+def test_bridges_a_brief_asd_negative_gap_inside_continuous_speech() -> None:
+    result = make_run_result(
+        observations=tuple(make_face(index / 25, 7) for index in range(75)),
+        segments=(
+            make_candidate_segment(0.0, 1.0, raw_score=1.0),
+            make_rejected_gap(
+                1.0,
+                2.0,
+                reason="non_positive_active_speaker_score",
+            ),
+            make_candidate_segment(2.0, 3.0, raw_score=2.0),
+        ),
+    )
+
+    runs = build_candidate_runs(result)
+
+    assert len(runs) == 1
+    assert (runs[0].source_start_seconds, runs[0].source_end_seconds) == (0.0, 3.0)
+    assert runs[0].status == "candidate"
+    assert runs[0].bridged_gap_intervals == ((1.0, 2.0),)
+    assert (runs[0].raw_score_min, runs[0].raw_score_mean, runs[0].raw_score_max) == (
+        1.0,
+        1.5,
+        2.0,
+    )
+
+
+def test_does_not_bridge_the_same_gap_across_a_shot_boundary() -> None:
+    result = make_run_result(
+        observations=tuple(make_face(index / 25, 7) for index in range(75)),
+        segments=(
+            make_candidate_segment(0.0, 1.0),
+            make_rejected_gap(
+                1.0,
+                2.0,
+                reason="non_positive_active_speaker_score",
+            ),
+            make_candidate_segment(2.0, 3.0),
+        ),
+        shot_boundary_timestamps=(1.5,),
+    )
+
+    runs = build_candidate_runs(
+        result,
+        DeepTalkCandidatePolicy(minimum_duration_seconds=0.5),
+    )
+
+    assert [(run.source_start_seconds, run.source_end_seconds) for run in runs] == [
+        (0.0, 1.0),
+        (2.0, 3.0),
+    ]
+    assert all(run.bridged_gap_intervals == () for run in runs)
+
+
+def test_prolonged_no_speech_terminates_a_run() -> None:
+    result = make_run_result(
+        observations=tuple(make_face(index / 25, 7) for index in range(88)),
+        segments=(
+            make_candidate_segment(0.0, 1.0),
+            make_rejected_gap(1.0, 2.5, reason="no_speech"),
+            make_candidate_segment(2.5, 3.5),
+        ),
+    )
+
+    runs = build_candidate_runs(
+        result,
+        DeepTalkCandidatePolicy(minimum_duration_seconds=0.5),
+    )
+
+    assert [(run.source_start_seconds, run.source_end_seconds) for run in runs] == [
+        (0.0, 1.0),
+        (2.5, 3.5),
+    ]
+
+
+def test_brief_vad_interruption_does_not_fragment_a_run() -> None:
+    result = make_run_result(
+        observations=tuple(make_face(index / 25, 7) for index in range(55)),
+        segments=(
+            make_candidate_segment(0.0, 1.0),
+            make_rejected_gap(1.0, 1.2, reason="no_speech"),
+            make_candidate_segment(1.2, 2.2),
+        ),
+    )
+
+    run = build_candidate_runs(result)[0]
+
+    assert (run.source_start_seconds, run.source_end_seconds) == (0.0, 2.2)
+    assert run.bridged_gap_intervals == ((1.0, 1.2),)
+
+
+def test_multiple_face_ambiguity_is_not_bridged() -> None:
+    result = make_run_result(
+        observations=tuple(
+            [*(make_face(index / 25, 7) for index in range(55))] + [make_face(1.08, 8)]
+        ),
+        segments=(
+            make_candidate_segment(0.0, 1.0),
+            make_rejected_gap(1.0, 1.2, reason="multiple_visible_faces"),
+            make_candidate_segment(1.2, 2.2),
+        ),
+    )
+
+    runs = build_candidate_runs(
+        result,
+        DeepTalkCandidatePolicy(minimum_duration_seconds=0.5),
+    )
+
+    assert [(run.source_start_seconds, run.source_end_seconds) for run in runs] == [
+        (0.0, 1.0),
+        (1.2, 2.2),
+    ]
+
+
+def test_trailing_grace_period_is_not_included_without_later_candidate_evidence() -> None:
+    result = make_run_result(
+        observations=tuple(make_face(index / 25, 7) for index in range(50)),
+        segments=(
+            make_candidate_segment(0.0, 1.0),
+            make_rejected_gap(1.0, 2.0, reason="no_speech"),
+        ),
+    )
+
+    run = build_candidate_runs(
+        result,
+        DeepTalkCandidatePolicy(minimum_duration_seconds=0.5),
+    )[0]
+
+    assert (run.source_start_seconds, run.source_end_seconds) == (0.0, 1.0)
+    assert run.bridged_gap_intervals == ()
+
+
+def test_missing_face_observations_make_a_short_gap_unbridgeable() -> None:
+    result = make_run_result(
+        observations=tuple(
+            [*(make_face(index / 25, 7) for index in range(25))]
+            + [*(make_face(2.0 + index / 25, 7) for index in range(25))]
+        ),
+        segments=(
+            make_candidate_segment(0.0, 1.0),
+            make_rejected_gap(
+                1.0,
+                2.0,
+                reason="non_positive_active_speaker_score",
+            ),
+            make_candidate_segment(2.0, 3.0),
+        ),
+    )
+
+    runs = build_candidate_runs(
+        result,
+        DeepTalkCandidatePolicy(minimum_duration_seconds=0.5),
+    )
+
+    assert [(run.source_start_seconds, run.source_end_seconds) for run in runs] == [
+        (0.0, 1.0),
+        (2.0, 3.0),
+    ]
+
+
+def test_shot_boundary_splits_preliminary_segments_and_candidate_runs() -> None:
+    result = make_result(
+        faces=(make_face(0.3, 7), make_face(0.7, 7)),
+        raw_scores={7: 1.25},
+        shot_boundary_timestamps=(0.5,),
+    )
+
+    segments = build_preliminary_segments(result)
+
+    assert [
+        (segment.source_start_seconds, segment.source_end_seconds, segment.status)
+        for segment in segments
+    ] == [
+        (0.0, 0.2, "rejected"),
+        (0.2, 0.5, "candidate"),
+        (0.5, 0.8, "candidate"),
+        (0.8, 1.0, "rejected"),
+    ]
+    runs = build_candidate_runs(replace(result, preliminary_segments=segments))
+    assert [(run.source_start_seconds, run.source_end_seconds) for run in runs] == [
+        (0.2, 0.5),
+        (0.5, 0.8),
+    ]
+
+
+def test_splits_a_preliminary_interval_at_multiple_shot_boundaries() -> None:
+    result = make_result(
+        faces=(make_face(0.25, 7), make_face(0.45, 7), make_face(0.7, 7)),
+        raw_scores={7: 1.25},
+        shot_boundary_timestamps=(0.35, 0.65),
+    )
+
+    segments = build_preliminary_segments(result)
+
+    assert [(segment.source_start_seconds, segment.source_end_seconds) for segment in segments] == [
+        (0.0, 0.2),
+        (0.2, 0.35),
+        (0.35, 0.65),
+        (0.65, 0.8),
+        (0.8, 1.0),
+    ]
+
+
+def test_preserves_source_timestamps_when_splitting_at_a_shot_boundary() -> None:
+    result = DeepTalkAnalysisResult(
+        face_observations=(make_face(10.5, 7), make_face(11.5, 7)),
+        speech_intervals=(DeepTalkSpeechInterval(10.0, 12.0, "confirmed"),),
+        score_windows=(DeepTalkScoreWindow(10.0, 12.0, {7: 1.25}),),
+        provenance=DeepTalkAnalysisProvenance(backend_version="0.3.1"),
+        shot_boundaries=(DeepTalkShotBoundary(10.75),),
+    )
+
+    segments = build_preliminary_segments(result)
+
+    assert [(segment.source_start_seconds, segment.source_end_seconds) for segment in segments] == [
+        (10.0, 10.75),
+        (10.75, 12.0),
+    ]
 
 
 def test_candidate_run_score_mean_is_weighted_by_segment_duration() -> None:
@@ -340,6 +613,7 @@ def test_rejects_an_unstable_visibility_gap_even_with_sufficient_coverage() -> N
         ("minimum_duration_seconds", 0.0, "minimum_duration_seconds"),
         ("minimum_face_coverage", 1.1, "minimum_face_coverage"),
         ("maximum_face_gap_seconds", -0.1, "maximum_face_gap_seconds"),
+        ("maximum_bridge_gap_seconds", -0.1, "maximum_bridge_gap_seconds"),
     ],
 )
 def test_candidate_policy_rejects_invalid_thresholds(

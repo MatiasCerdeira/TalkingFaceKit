@@ -21,6 +21,7 @@ from talkingfacekit.integrations.deeptalk import (
     DeepTalkFaceObservation,
     DeepTalkPreliminarySegment,
     DeepTalkScoreWindow,
+    DeepTalkShotBoundary,
     DeepTalkSpeechInterval,
 )
 
@@ -296,6 +297,7 @@ def test_analyzes_active_speakers_and_prints_a_readable_summary(
             ),
         ),
         provenance=DeepTalkAnalysisProvenance(backend_version="0.3.1"),
+        shot_boundaries=(DeepTalkShotBoundary(0.55),),
         audio_timeline_repairs=(
             DeepTalkAudioTimelineRepair(
                 kind="audio_gap_filled",
@@ -333,6 +335,7 @@ def test_analyzes_active_speakers_and_prints_a_readable_summary(
                 raw_score_min=1.25,
                 raw_score_mean=1.25,
                 raw_score_max=1.25,
+                bridged_gap_intervals=((0.8, 1.0),),
             ),
         ),
     )
@@ -381,6 +384,7 @@ def test_analyzes_active_speakers_and_prints_a_readable_summary(
     output = capsys.readouterr().out
     assert "backend: DeepTalk-ASD 0.3.1" in output
     assert "face IDs: [7]" in output
+    assert "scene cut boundaries:\n  0.550" in output
     assert "[0.600, 1.400) confirmed" in output
     assert "face_7=+1.250, face_9=-0.500" in output
     assert (
@@ -392,6 +396,7 @@ def test_analyzes_active_speakers_and_prints_a_readable_summary(
         "coverage=100.0% max_gap=0.040s score[min/mean/max]=+1.250/+1.250/+1.250 "
         "(structural_policy_passed)" in output
     )
+    assert "bridged_gaps=[0.800,1.000)" in output
     assert "[0.700, 0.710) filled silence (0.010 seconds)" in output
     assert "issues: audio_gap_filled" in output
     assert "structurally passing candidates are not yet accepted training segments" in output

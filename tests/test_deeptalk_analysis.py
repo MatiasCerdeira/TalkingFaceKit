@@ -11,7 +11,7 @@ from typing import Any, cast
 import numpy as np
 import pytest
 
-from talkingfacekit import TalkingFaceSequence, VideoMetadata, VideoSource
+from talkingfacekit import DecodedVideoFrame, TalkingFaceSequence, VideoMetadata, VideoSource
 from talkingfacekit.integrations import deeptalk
 
 
@@ -139,6 +139,7 @@ def test_analyzes_one_sequence_on_a_single_source_relative_timeline(
     assert result.speech_intervals == ()
     assert result.provenance.backend_version == "0.3.1"
     assert result.provenance.speaker_embeddings_available is False
+    assert result.shot_boundaries == ()
     assert result.issues == ()
 
     detector.rectangle.x = 999.0
@@ -149,6 +150,39 @@ def test_analyzes_one_sequence_on_a_single_source_relative_timeline(
     assert result.face_observations[0].head_pose_yaw_pitch_roll_degrees[0] == 8.0
     assert result.face_observations[0].raw_face_quality_score == 0.875
     assert result.score_windows[1].raw_scores[7] == 1.75
+
+
+def test_content_detector_finds_a_scene_cut_on_the_source_timeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("scenedetect")
+    sequence = make_sequence(start_seconds=10.0, end_seconds=11.6)
+    frames = [
+        (
+            10.0 + index / 25,
+            DecodedVideoFrame(
+                frame_index=300 + index,
+                timestamp_seconds=10.0 + index / 25,
+                rgb=np.full(
+                    (32, 48, 3),
+                    (255, 0, 0) if index < 20 else (255, 255, 255),
+                    dtype=np.uint8,
+                ),
+            ),
+        )
+        for index in range(40)
+    ]
+    module = ModuleType("fake_deeptalk")
+    module.VideoBufferType = SimpleNamespace(RGB24="rgb24")  # type: ignore[attr-defined]
+    module.VideoFrame = lambda **kwargs: kwargs  # type: ignore[attr-defined]
+    monkeypatch.setattr(deeptalk, "_sample_video_frames_25_fps", lambda _: iter(frames))
+    boundaries: list[deeptalk.DeepTalkShotBoundary] = []
+
+    events = list(deeptalk._iter_deeptalk_video_frames(sequence, module, boundaries))
+
+    assert [events[0][0], events[-1][0]] == pytest.approx([0.0, 1.56])
+    assert len(boundaries) == 1
+    assert boundaries[0].source_timestamp_seconds == pytest.approx(10.8)
 
 
 def test_keeps_a_final_partial_score_window(monkeypatch: pytest.MonkeyPatch) -> None:

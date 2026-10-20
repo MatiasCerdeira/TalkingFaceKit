@@ -14,6 +14,7 @@ from talkingfacekit.integrations.deeptalk import (
     DeepTalkFaceObservation,
     DeepTalkPreliminarySegment,
     DeepTalkScoreWindow,
+    DeepTalkShotBoundary,
     DeepTalkSpeechInterval,
 )
 
@@ -62,6 +63,7 @@ def make_result() -> DeepTalkAnalysisResult:
             ),
         ),
         provenance=DeepTalkAnalysisProvenance(backend_version="0.3.1"),
+        shot_boundaries=(DeepTalkShotBoundary(source_timestamp_seconds=0.55),),
         audio_timeline_repairs=(
             DeepTalkAudioTimelineRepair(
                 kind="audio_gap_filled",
@@ -75,6 +77,24 @@ def make_result() -> DeepTalkAnalysisResult:
         preliminary_segments=(
             DeepTalkPreliminarySegment(
                 source_start_seconds=0.6,
+                source_end_seconds=0.8,
+                status="candidate",
+                face_id=2,
+                reason_codes=("single_visible_face", "positive_raw_active_speaker_score"),
+                visible_face_ids=(2,),
+                raw_score=2.125,
+            ),
+            DeepTalkPreliminarySegment(
+                source_start_seconds=0.8,
+                source_end_seconds=1.0,
+                status="rejected",
+                face_id=2,
+                reason_codes=("non_positive_active_speaker_score",),
+                visible_face_ids=(2,),
+                raw_score=-0.25,
+            ),
+            DeepTalkPreliminarySegment(
+                source_start_seconds=1.0,
                 source_end_seconds=1.4,
                 status="candidate",
                 face_id=2,
@@ -91,7 +111,7 @@ def make_result() -> DeepTalkAnalysisResult:
                 status="candidate",
                 face_id=2,
                 reason_codes=("structural_policy_passed",),
-                preliminary_segment_count=1,
+                preliminary_segment_count=3,
                 face_observation_count=20,
                 expected_face_observation_count=20,
                 face_visibility_fraction=1.0,
@@ -99,6 +119,7 @@ def make_result() -> DeepTalkAnalysisResult:
                 raw_score_min=2.125,
                 raw_score_mean=2.125,
                 raw_score_max=2.125,
+                bridged_gap_intervals=((0.8, 1.0),),
             ),
         ),
     )
@@ -134,6 +155,9 @@ def test_renders_a_self_contained_synchronized_report_payload(tmp_path: Path) ->
     assert "buildDecisionSummary()" in report_html
     assert "Y/P/R" in report_html
     assert "quality.toFixed(3)" in report_html
+    assert "Scene cut" in report_html
+    assert "POR CONTINUIDAD" in report_html
+    assert "evidencia instantánea" in report_html
     assert "video.currentTime" in report_html
     assert "fetch(" not in report_html
     payload = extract_report_payload(report_html)
@@ -159,13 +183,31 @@ def test_renders_a_self_contained_synchronized_report_payload(tmp_path: Path) ->
     assert payload["preliminarySegments"] == [
         [
             0.6,
+            0.8,
+            "candidate",
+            2,
+            ["single_visible_face", "positive_raw_active_speaker_score"],
+            2.125,
+            [2],
+        ],
+        [
+            0.8,
+            1.0,
+            "rejected",
+            2,
+            ["non_positive_active_speaker_score"],
+            -0.25,
+            [2],
+        ],
+        [
+            1.0,
             1.4,
             "candidate",
             2,
             ["single_visible_face", "positive_raw_active_speaker_score"],
             2.125,
             [2],
-        ]
+        ],
     ]
     assert payload["candidatePolicy"] == {
         "minimumDurationSeconds": 0.5,
@@ -187,8 +229,10 @@ def test_renders_a_self_contained_synchronized_report_payload(tmp_path: Path) ->
             2.125,
             20,
             20,
+            [[0.8, 1.0]],
         ]
     ]
+    assert payload["shotBoundaries"] == [0.55]
     assert payload["repairs"] == [["audio_gap_filled", 0.7, 0.71, 480, 48_000]]
     assert payload["issues"] == ["audio_gap_filled"]
 
