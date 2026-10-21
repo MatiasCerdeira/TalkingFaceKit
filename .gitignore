@@ -268,6 +268,15 @@ outputs/
 reports/
 artifacts/
 
+# El benchmark versiona anotaciones y manifiesto; sus videos permanecen fuera de Git.
+benchmark/videos/
+benchmark/**/*.mp4
+benchmark/**/*.webm
+benchmark/**/*.mov
+benchmark/**/*.mkv
+benchmark/**/*.avi
+benchmark/**/*.m4v
+
 # Modelos y checkpoints
 models/
 checkpoints/

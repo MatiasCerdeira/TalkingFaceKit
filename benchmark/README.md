@@ -31,13 +31,15 @@ que elige TalkingFaceKit. Cada persona mira el video y anota únicamente los tra
    «miré la ventana completa y no conservaría nada»; no se usa para un video pendiente.
 7. **Revisar juntos los primeros dos o tres casos.** Acordar qué conservaríamos antes de repartir el
    resto. Si aparece un tramo difícil de decidir, revisarlo con otra persona antes de cerrar la
-   anotación. Una persona reúne las entradas de todos en `annotations.json` para evitar que varias
-   personas editen el mismo archivo a la vez.
+   anotación. Cada persona edita el JSON de sus videos en `benchmark/annotations/` y comparte sus
+   cambios mediante Git. El [reparto](assignments.md) registra responsables y pendientes.
 
 ## El JSON que completa el equipo
 
-Hay solo cuatro campos por caso. Se puede copiar la
-[plantilla](annotations.example.json) y reemplazar los ejemplos por anotaciones reales.
+Hay solo cuatro campos por caso. Copiar la [plantilla](annotations.example.json) a un archivo por
+video, por ejemplo `benchmark/annotations/video_01.mp4.json`. Cada archivo contiene una lista de
+ventanas terminadas para ese video. Los dos objetos siguientes ilustran dos videos distintos;
+en el trabajo del equipo van en sus respectivos archivos.
 
 ```json
 [
@@ -63,63 +65,94 @@ Los ejemplos son ficticios; el fin de la ventana debe existir en el video real.
 
 No hay que ingresar hashes, identificadores, tags, cantidad de caras ni cortes individuales.
 
-## Organización de la carpeta compartida
+## Organización compartida
 
-Usar el almacenamiento privado que ya tenga el equipo. Todos descargan o sincronizan la misma
-carpeta, por ejemplo a `data/eval/` dentro de su checkout:
+Las etiquetas y el manifiesto aprobado se comparten mediante Git:
 
 ```text
-data/eval/
-  annotations.json
-  manifest.json          (lo genera el programa)
-  videos/
-    video_01.mp4
-    video_02.mp4
+benchmark/
+  assignments.md
+  annotations/
+    video_01.mp4.json
+    video_02.mp4.json
+  manifest.json          (lo genera el programa; no editar a mano)
 ```
 
-Videos, anotaciones y resultados quedan fuera de Git, según `AGENTS.md`. `data/` y `reports/` ya
-están ignorados. El repositorio contiene las instrucciones, la plantilla ficticia y el código.
-Compartir archivos de terceros solo cuando su licencia o permiso lo permita.
+Cada persona actualiza el repositorio y descarga de Drive los mismos videos a `data/eval/videos/`.
+Conservar exactamente los nombres y archivos; sus hashes detectan versiones diferentes. Videos,
+modelos y resultados de las corridas siguen fuera de Git; `data/` y `reports/` permanecen ignorados.
+
+Los videos pendientes van en el [reparto](assignments.md), sin un JSON de selección terminado.
+`selected: []` significa «revisado y descartado completo». La plantilla ficticia queda fuera de
+`annotations/`. Se admiten subcarpetas: el programa lee recursivamente todos los `.json` en orden
+de ruta, mantiene el orden de las ventanas de cada archivo y rechaza entradas inválidas o duplicadas.
 
 ## Cuando las anotaciones estén listas: para quien corre la evaluación
 
-**1. Generar el manifiesto una vez.** El programa valida las anotaciones y calcula automáticamente
-los identificadores y los hashes de los videos. No ejecuta modelos ni modifica `annotations.json`.
+**1. Comprobar la versión compartida.** Actualizar el repositorio y descargar los videos. El
+manifiesto aprobado ya viene en Git. Este comando verifica que coincida con todas las anotaciones
+y videos locales, sin escribir ni ejecutar modelos:
 
 ```bash
-uv run python -m talkingfacekit prepare-benchmark data/eval/annotations.json \
-  --videos-dir data/eval/videos --output data/eval/manifest.json
+uv run python -m talkingfacekit prepare-benchmark benchmark/annotations \
+  --videos-dir data/eval/videos --output benchmark/manifest.json --check
 ```
 
-**2. Compartir ese `manifest.json` junto con los videos.** Se genera una vez para una versión
-aprobada del conjunto. No regenerarlo en cada equipo o antes de cada corrida: sus hashes permiten
-detectar si alguien tiene videos distintos. Para reemplazarlo tras un cambio acordado de las
-anotaciones, usar `--overwrite` y tratar el cambio como una nueva versión del conjunto.
-
-Opcionalmente, guardar en Git un archivo `benchmark/manifest.sha256` con el SHA-256 del manifiesto
-aprobado, generado con el siguiente comando. Así una revisión de código puede referenciar una
-versión exacta de las anotaciones sin guardar el dataset en Git.
+**2. Actualizar el manifiesto cuando cambien las anotaciones.** Después de revisar un nuevo video
+o una corrección, una persona regenera el manifiesto con los videos definitivos de Drive. Revisar
+su diff y subirlo junto con los JSON modificados. No regenerarlo para ocultar un cambio accidental
+de video: primero corregir la copia local. No editar hashes ni IDs a mano.
 
 ```bash
-uv run python -c "import hashlib, pathlib; p = pathlib.Path('data/eval/manifest.json'); print(hashlib.sha256(p.read_bytes()).hexdigest())" > benchmark/manifest.sha256
+uv run python -m talkingfacekit prepare-benchmark benchmark/annotations \
+  --videos-dir data/eval/videos --output benchmark/manifest.json --overwrite
 ```
+
+El manifiesto debe quedar fuera de `benchmark/annotations/`, para que no se lea como otra anotación.
+El flujo anterior con una lista JSON única sigue funcionando; la carpeta versionada es la fuente
+de trabajo del equipo. Las copias anteriores bajo `data/eval/` son snapshots locales.
 
 **3. Correr la evaluación.** Requiere el entorno y los modelos del adapter DeepTalk. Comprueba los
 archivos y luego compara los tramos elegidos por la librería con las anotaciones humanas.
 
 ```bash
 uv run --extra active-speaker-deeptalk python -m talkingfacekit evaluate-benchmark \
-  data/eval/manifest.json --videos-dir data/eval/videos \
+  benchmark/manifest.json --videos-dir data/eval/videos \
   --output reports/benchmark-v1-run01.json
 ```
 
-Si se creó el archivo de hash del manifiesto, agregar `--manifest-lock benchmark/manifest.sha256`.
-`--verify-only` es una opción auxiliar para comprobar archivos sin ejecutar los modelos; la corrida
-completa ya hace esa comprobación automáticamente.
+`--verify-only` es una opción auxiliar para comprobar hashes y etiquetas del manifiesto sin ejecutar
+modelos; la corrida completa ya hace esa comprobación. `prepare-benchmark --check` también comprueba
+su correspondencia con la carpeta de anotaciones. El resultado guarda el hash exacto del manifiesto.
 
 El resultado muestra, por video y en total, precisión, recall, segundos conservados incorrectamente
 y segundos útiles perdidos. El reporte guarda también las predicciones y la versión de código.
 Usar un nombre de salida distinto por corrida para conservar las comparaciones.
+
+**4. Generar el comparador visual de esa corrida.** No vuelve a analizar el video ni necesita los
+modelos instalados. Comprueba los archivos contra los hashes guardados:
+
+```bash
+uv run python -m talkingfacekit render-benchmark reports/benchmark-v1-run01.json \
+  --videos-dir data/eval/videos --output reports/benchmark-v1-run01.html
+```
+
+Abrir el HTML como archivo local en un navegador que reproduzca el formato de los videos. Elegir un
+caso y comparar las bandas **Humano**, **Librería** y **Comparación**. Las diferencias se separan en
+**Conservado de más** y **Útil perdido**; se pueden filtrar y recorrer con **Anterior/Siguiente**.
+Seleccionar una amplía su entorno y mueve el reproductor al comienzo. El botón de reproducción con
+contexto incluye 1,5 segundos a cada lado y se detiene al terminar ese contexto o la ventana.
+
+El panel del instante actual muestra las dos selecciones y, para corridas nuevas, los motivos de las
+reglas, IDs detectados, score crudo, duración y cobertura. También identifica interrupciones
+conservadas por continuidad. Las corridas antiguas sin diagnóstico permiten comparar los intervalos
+y muestran explícitamente que no tienen motivos registrados. Las regiones `ignore` no cuentan como
+errores. El reporte no modifica anotaciones, no envía datos a servicios externos y no copia videos:
+hay que mantenerlos en las rutas usadas al generar el HTML. Usar `--overwrite` para reemplazarlo.
+
+La comparación es por tiempo, no una evaluación de todas las fronteras: intervalos contiguos pueden
+coincidir temporalmente aunque se hayan dividido de otra manera. Sus bordes siguen visibles en las
+bandas para poder inspeccionarlos.
 
 Las anotaciones se mantienen fijas mientras cambia la librería. Si hay una diferencia, inspeccionar
 ese instante con el visualizador para entender su causa. No editar la selección humana solo para

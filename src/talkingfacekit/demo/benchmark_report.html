@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TalkingFaceKit · Humano y librería</title>
+  <style>
+    :root { color-scheme: dark; --bg:#10141c; --panel:#191f2a; --line:#323c4d;
+      --text:#edf2fa; --muted:#acb8ca; --human:#c5b3ff; --library:#6fb6ff;
+      --false_positive:#ffad66; --false_negative:#ff7f99; --both_selected:#65d1ae;
+      --both_rejected:#344151; --ignored:#8590a0; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 system-ui,sans-serif; }
+    button,select,input { font:inherit; }
+    button,select { background:#242e3e; color:var(--text); border:1px solid var(--line);
+      border-radius:7px; padding:8px 12px; }
+    button { cursor:pointer; } button:hover { border-color:var(--library); }
+    button:disabled { opacity:.4; cursor:default; }
+    :focus-visible { outline:2px solid var(--library); outline-offset:3px; }
+    h1 { font-size:25px; line-height:1.2; margin:5px 0 10px; letter-spacing:-.6px; }
+    h2 { font-size:17px; margin:0 0 12px; } p { margin:8px 0; }
+    .muted,small { color:var(--muted); } .eyebrow { color:var(--library); font-size:11px;
+      font-weight:700; letter-spacing:1.6px; text-transform:uppercase; }
+    header,main,footer { max-width:1480px; margin:auto; padding:22px 28px; }
+    header { border-bottom:1px solid var(--line); }
+    .topline,.toolbar,.case-heading,.summary-heading { display:flex; gap:14px;
+      align-items:center; justify-content:space-between; flex-wrap:wrap; }
+    #case-select { max-width:620px; width:min(620px,100%); }
+    .layout { display:grid; grid-template-columns:minmax(0,1.7fr) minmax(320px,1fr); gap:18px; margin-top:20px; }
+    .panel { border:1px solid var(--line); border-radius:12px; background:var(--panel);
+      padding:18px; min-width:0; }
+    .video-wrap { background:#05070c; border-radius:8px; overflow:hidden; }
+    video { width:100%; display:block; max-height:440px; background:#05070c; }
+    .toolbar { justify-content:flex-start; margin-top:12px; }
+    .time { font-variant-numeric:tabular-nums; font-family:ui-monospace,monospace; }
+    #media-error { padding:12px; border:1px solid var(--false_positive); border-radius:6px; }
+    .legend { display:flex; flex-wrap:wrap; gap:12px; margin:12px 0; font-size:12px; color:var(--muted); }
+    .legend span::before { content:""; display:inline-block; width:9px; height:9px;
+      margin-right:5px; background:var(--swatch); border-radius:2px; }
+    #timeline { width:100%; display:block; cursor:crosshair; touch-action:manipulation; }
+    .seek-row { display:flex; align-items:center; gap:12px; } #seek { flex:1; min-width:0; accent-color:var(--library); }
+    .inspector { margin-top:18px; } .state-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .state { border:1px solid var(--line); border-radius:7px; padding:12px; }
+    .state strong { display:block; font-size:17px; }
+    #status { margin:12px 0; border-left:3px solid var(--library); padding-left:10px; }
+    #evidence { padding-left:20px; color:var(--muted); } #evidence li { margin:9px 0; }
+    #differences { max-height:440px; overflow:auto; display:grid; gap:9px; margin-top:12px; }
+    .difference { text-align:left; display:grid; gap:4px; width:100%; border-left:3px solid var(--false_positive); }
+    .difference.false_negative { border-left-color:var(--false_negative); }
+    .difference[aria-pressed="true"] { background:#313e54; outline:1px solid var(--library); }
+    .difference .time { font-size:13px; color:var(--muted); }
+    .nav { display:flex; gap:8px; margin-top:12px; } .nav button { flex:1; }
+    details { margin-top:18px; } summary { cursor:pointer; font-weight:600; }
+    .metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-top:14px; }
+    .metric { padding:12px; background:#111824; border-radius:7px; }
+    .metric strong { display:block; font-size:22px; font-variant-numeric:tabular-nums; }
+    .metric span { color:var(--muted); font-size:12px; }
+    .table-wrap { overflow-x:auto; margin-top:16px; } table { border-collapse:collapse; width:100%; }
+    th,td { padding:11px; border-bottom:1px solid var(--line); text-align:left; font-variant-numeric:tabular-nums; }
+    th { color:var(--muted); font-size:12px; } td:first-child { min-width:220px; }
+    td button { text-align:left; width:100%; } tr.active { background:#243044; }
+    footer { font-size:12px; color:var(--muted); overflow-wrap:anywhere; padding-top:0; }
+    #policy { margin:10px 0; overflow-wrap:anywhere; }
+    @media(max-width:960px) { .layout { grid-template-columns:1fr; } #differences { max-height:280px; } }
+    @media(max-width:600px) { header,main,footer { padding:16px; } .panel { padding:12px; }
+      .metrics { grid-template-columns:1fr 1fr; } h1 { font-size:22px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="eyebrow">TalkingFaceKit / Evaluación de segmentos</div>
+    <h1>Lo que elegimos. Lo que elige la librería.</h1>
+    <p class="muted">Compará las selecciones, encontrá las diferencias e inspeccioná la decisión en el video.</p>
+    <div class="topline"><label for="case-select">Caso <select id="case-select"></select></label>
+      <span class="muted" id="dataset-summary"></span></div>
+  </header>
+  <main>
+    <div class="case-heading"><h2 id="case-name"></h2><span id="window-label" class="time muted"></span></div>
+    <div class="layout">
+      <section class="panel" aria-label="Video y comparación temporal">
+        <div class="video-wrap"><video id="video" controls preload="metadata" playsinline></video></div>
+        <p id="media-error" role="alert" hidden></p>
+        <div class="toolbar">
+          <button id="play-context" disabled>Reproducir diferencia con contexto</button>
+          <button id="reset-view">Ver ventana completa</button>
+          <span id="view-label" class="muted"></span>
+        </div>
+        <div class="legend">
+          <span style="--swatch:var(--both_selected)">Ambos conservan</span>
+          <span style="--swatch:var(--both_rejected)">Ambos descartan</span>
+          <span style="--swatch:var(--false_positive)">Conservado de más</span>
+          <span style="--swatch:var(--false_negative)">Útil perdido</span>
+          <span style="--swatch:var(--ignored)">Sin evaluar</span>
+          <span style="--swatch:#50d8e3">Corte detectado</span>
+        </div>
+        <svg id="timeline" viewBox="0 0 1000 200" role="img" aria-label="Selecciones humanas, predicciones y diferencias. Usá el control de tiempo para navegar con teclado."></svg>
+        <div class="seek-row"><label for="seek" class="muted">Ir a</label>
+          <input id="seek" type="range" step="0.01" aria-label="Tiempo en el video original">
+          <output id="time" class="time"></output></div>
+        <p class="muted"><small>Click en una banda para ir a ese instante. Cada bloque conserva sus límites; los tiempos son del archivo original.</small></p>
+        <details><summary>Métricas de este caso</summary><div id="case-metrics" class="metrics"></div>
+          <p class="muted"><small>Precisión y recall por tiempo. «—» significa que el denominador es cero. El tiempo sin evaluar queda excluido.</small></p></details>
+      </section>
+      <aside>
+        <section class="panel" aria-label="Navegar diferencias">
+          <div class="summary-heading"><h2 id="difference-count"></h2>
+            <select id="filter" aria-label="Tipo de diferencia">
+              <option value="all">Todas las diferencias</option>
+              <option value="false_positive">Conservado de más</option>
+              <option value="false_negative">Útil perdido</option>
+            </select></div>
+          <p class="muted"><small>Elegí una diferencia para ampliar su entorno. El video queda pausado para inspeccionarla.</small></p>
+          <div class="nav"><button id="previous">← Anterior</button><button id="next">Siguiente →</button></div>
+          <div id="differences"></div>
+        </section>
+        <section class="panel inspector" aria-label="Decisión en el instante actual">
+          <h2>En este instante <span id="inspector-time" class="time muted"></span></h2>
+          <div class="state-grid"><div class="state">Humano<strong id="human-state"></strong></div>
+            <div class="state">Librería<strong id="library-state"></strong></div></div>
+          <p id="status" aria-live="polite"></p>
+          <ul id="evidence"></ul>
+          <details><summary>Configuración y avisos de la corrida</summary>
+            <p class="muted" id="policy"></p><ul id="issues"></ul></details>
+        </section>
+      </aside>
+    </div>
+    <section class="panel" style="margin-top:18px" aria-label="Resumen del conjunto">
+      <div class="summary-heading"><h2>Todos los casos</h2><span id="total-errors" class="muted"></span></div>
+      <p class="muted">Elegí un caso para inspeccionarlo. Las anotaciones humanas permanecen fijas.</p>
+      <div class="table-wrap"><table><thead><tr><th>Video / ventana original</th><th>Precisión</th><th>Recall</th>
+        <th>Conservado de más</th><th>Útil perdido</th></tr></thead><tbody id="case-table"></tbody></table></div>
+      <details><summary>Métricas globales · suma de segundos de los casos</summary><div id="overall-metrics" class="metrics"></div></details>
+    </section>
+  </main>
+  <footer><p>La comparación mide selección temporal. Dos segmentos contiguos pueden coincidir por tiempo y tener fronteras distintas.
+    Los motivos muestran reglas registradas; no demuestran por sí solos la causa de un error del modelo.
+    «Conservar» significa candidato en la etapa actual, pendiente de criterios finales de orientación, calidad y sincronización.</p>
+    <p id="provenance"></p></footer>
+  <script>
+    "use strict";
+    const REPORT = __BENCHMARK_DATA__;
+    const $ = id => document.getElementById(id);
+    const video = $("video");
+    const labels = {both_selected:"Ambos conservan",both_rejected:"Ambos descartan",
+      false_positive:"Conservado de más",false_negative:"Útil perdido",ignored:"Sin evaluar"};
+    const colors = {both_selected:"#65d1ae",both_rejected:"#344151",false_positive:"#ffad66",
+      false_negative:"#ff7f99",ignored:"#8590a0"};
+    const reasons = {no_speech:"No se detectó habla",no_visible_face:"No se detectó un rostro visible",
+      multiple_visible_faces:"Se detectaron varios rostros a la vez",face_identity_changed:"Cambió el ID de rostro",
+      no_active_speaker_score:"Falta el score de hablante activo",non_positive_active_speaker_score:"El score de hablante activo no fue positivo",
+      single_visible_face:"Un solo rostro detectado",positive_raw_active_speaker_score:"Score de hablante activo positivo",
+      structural_policy_passed:"Cumple las reglas de duración y cobertura",candidate_too_short:"El segmento es demasiado corto",
+      insufficient_face_coverage:"Cobertura de detecciones insuficiente",unstable_face_visibility:"Hueco sin detectar el rostro demasiado largo"};
+    const policyLabels = {minimum_duration_seconds:"Duración mínima (s)",minimum_face_coverage:"Cobertura mínima (fracción)",
+      maximum_face_gap_seconds:"Mayor hueco sin rostro permitido (s)",maximum_bridge_gap_seconds:"Interrupción breve máxima (s)"};
+    let caseIndex = 0, activeDifference = -1, view = [0,1], playbackEnd = null, pendingSeek = null;
+    const current = () => REPORT.cases[caseIndex];
+    const contains = (pairs,t) => pairs.some(([a,b]) => a <= t && t < b);
+    const seconds = t => `${t.toFixed(2)} s`;
+    function clock(t) { const minutes = Math.floor(t / 60); return `${minutes}:${(t-minutes*60).toFixed(2).padStart(5,"0")}`; }
+    const ratio = value => value === null ? "—" : `${(value*100).toFixed(1)} %`;
+    const differences = () => current().regions.filter(r => r.status === "false_positive" || r.status === "false_negative");
+    const filteredDifferences = () => differences().filter(r => $("filter").value === "all" || r.status === $("filter").value);
+    const spanText = r => `${clock(r.start)} – ${clock(r.end)} · ${seconds(r.end-r.start)}`;
+    const regionAt = t => current().regions.find(r => r.start <= t && t < r.end);
+    function node(tag,text,className) { const el = document.createElement(tag); if(text !== undefined) el.textContent = text; if(className) el.className = className; return el; }
+    function showMetrics(target,metrics) {
+      target.replaceChildren();
+      for(const [label,value] of [["Precisión por tiempo",ratio(metrics.precision)],["Recall por tiempo",ratio(metrics.recall)],
+        ["Conservado de más",seconds(metrics.false_positive_seconds)],["Útil perdido",seconds(metrics.false_negative_seconds)]]) {
+        const card = node("div",undefined,"metric"); card.append(node("strong",value),node("span",label)); target.append(card);
+      }
+    }
+    function chooseCase(index) {
+      video.pause(); caseIndex = index; activeDifference = -1; playbackEnd = null; pendingSeek = null;
+      view = [...current().window]; $("case-select").value = String(index); $("filter").value = "all";
+      $("case-name").textContent = current().file;
+      $("window-label").textContent = `${clock(view[0])} – ${clock(view[1])} · ${seconds(view[1]-view[0])}`;
+      $("media-error").hidden = true;
+      $("seek").min = String(view[0]); $("seek").max = String(view[1]);
+      if(video.getAttribute("src") !== current().video_url) { video.src = current().video_url; video.load(); }
+      else if(video.readyState >= 1) seek(view[0]);
+      showMetrics($("case-metrics"),current().metrics);
+      $("policy").textContent = `DeepTalk ${current().backend_version || "sin versión registrada"}. ` +
+        Object.entries(current().candidate_policy).map(([key,value]) => `${policyLabels[key] || key}: ${value}`).join(" · ");
+      $("issues").replaceChildren(...current().issues.map(issue => node("li",issue)));
+      if(!current().issues.length) $("issues").append(node("li","Sin avisos registrados."));
+      document.querySelectorAll("#case-table tr").forEach((row,i) => row.classList.toggle("active",i === index));
+      renderDifferences(); update(view[0]);
+    }
+    function seek(time) {
+      const [start,end] = current().window;
+      const target = Math.max(start,Math.min(end,time));
+      if(video.readyState >= 1) { video.currentTime = target; pendingSeek = null; }
+      else pendingSeek = target;
+      update(target);
+    }
+    function pickDifference(index) {
+      const list = filteredDifferences(); if(index < 0 || index >= list.length) return;
+      video.pause(); playbackEnd = null; activeDifference = index;
+      const r = list[index];
+      view = [Math.max(current().window[0],r.start-3),Math.min(current().window[1],r.end+3)];
+      renderDifferences(); seek(r.start);
+    }
+    function renderDifferences() {
+      const list = filteredDifferences();
+      $("difference-count").textContent = `${list.length} ${list.length === 1 ? "diferencia" : "diferencias"}`;
+      $("previous").disabled = !list.length || activeDifference === 0;
+      $("next").disabled = !list.length || activeDifference === list.length-1;
+      $("play-context").disabled = activeDifference < 0 || !list.length;
+      $("differences").replaceChildren();
+      for(const [i,r] of list.entries()) {
+        const button = node("button",undefined,`difference ${r.status}`);
+        button.setAttribute("aria-pressed",String(i === activeDifference));
+        button.append(node("strong",labels[r.status]),node("span",spanText(r),"time"));
+        button.addEventListener("click",() => pickDifference(i)); $("differences").append(button);
+      }
+      if(!list.length) $("differences").append(node("p",differences().length ? "No hay diferencias de este tipo." :
+        "No hay diferencias de selección en el tiempo evaluado de este caso.","muted"));
+    }
+    function svgNode(tag,attrs,text) {
+      const el = document.createElementNS("http://www.w3.org/2000/svg",tag);
+      for(const [key,value] of Object.entries(attrs)) el.setAttribute(key,String(value));
+      if(text !== undefined) el.textContent = text; return el;
+    }
+    function drawTimeline(t) {
+      const svg = $("timeline"), left = 115, width = 870;
+      const x = value => left + (value-view[0])/(view[1]-view[0])*width;
+      svg.replaceChildren();
+      const active = filteredDifferences()[activeDifference];
+      if(active) svg.append(svgNode("rect",{x:x(Math.max(view[0],active.start)),y:20,
+        width:x(Math.min(view[1],active.end))-x(Math.max(view[0],active.start)),height:145,fill:"#ffffff",opacity:.045}));
+      for(const [label,y] of [["Humano",35],["Librería",83],["Comparación",131]]) {
+        svg.append(svgNode("text",{x:0,y:y+20,fill:"#acb8ca","font-size":15},label));
+        svg.append(svgNode("rect",{x:left,y,width,height:29,rx:3,fill:"#101722"}));
+      }
+      function block(a,b,y,color,title) {
+        const start = Math.max(a,view[0]), end = Math.min(b,view[1]); if(end <= start) return;
+        const rect = svgNode("rect",{x:x(start),y,width:Math.max(.5,x(end)-x(start)),height:29,rx:2,fill:color,stroke:"#10141c","stroke-width":1});
+        rect.append(svgNode("title",{},title)); svg.append(rect);
+      }
+      for(const [a,b] of current().selected) block(a,b,35,"#c5b3ff",`Humano conserva ${clock(a)} – ${clock(b)}`);
+      for(const [a,b] of current().predicted) block(a,b,83,"#6fb6ff",`Librería conserva ${clock(a)} – ${clock(b)}`);
+      for(const r of current().regions) block(r.start,r.end,131,colors[r.status],`${labels[r.status]} · ${spanText(r)}`);
+      for(const [a,b] of current().ignore) {
+        block(a,b,35,"#596372","Sin evaluar"); block(a,b,83,"#596372","Sin evaluar");
+      }
+      for(const [intervals,y] of [[current().selected,35],[current().predicted,83]]) {
+        if(!intervals.length) svg.append(svgNode("text",{x:left+12,y:y+20,fill:"#acb8ca","font-size":13},
+          "Sin intervalos conservados"));
+      }
+      for(const cut of current().diagnostics?.shot_boundaries || []) {
+        if(cut >= view[0] && cut <= view[1]) svg.append(svgNode("line",{x1:x(cut),x2:x(cut),y1:25,y2:163,stroke:"#50d8e3","stroke-width":2,"stroke-dasharray":"4 3"}));
+      }
+      for(let i=0;i<=4;i++) {
+        const value = view[0]+(view[1]-view[0])*i/4;
+        svg.append(svgNode("text",{x:x(value),y:188,fill:"#acb8ca","font-size":13,"text-anchor":i===0?"start":i===4?"end":"middle"},clock(value)));
+      }
+      if(t >= view[0] && t <= view[1]) svg.append(svgNode("line",{x1:x(t),x2:x(t),y1:22,y2:164,stroke:"#fff","stroke-width":2}));
+      $("view-label").textContent = view[0] === current().window[0] && view[1] === current().window[1] ? "Ventana completa" : "Entorno de la diferencia · ±3 s";
+    }
+    function update(t) {
+      $("seek").value = String(t); $("time").textContent = clock(t); $("inspector-time").textContent = clock(t);
+      const r = regionAt(t), ignored = r?.status === "ignored";
+      $("human-state").textContent = !r ? "—" : ignored ? "Sin evaluar" : contains(current().selected,t) ? "Conservar" : "Descartar";
+      $("library-state").textContent = !r ? "—" : contains(current().predicted,t) ? "Conservar" : "Descartar";
+      $("status").textContent = r ? labels[r.status] : "Fin de la ventana evaluada";
+      $("status").style.borderColor = colors[r?.status] || "#6fb6ff";
+      const evidence = $("evidence"); evidence.replaceChildren();
+      function line(text) { evidence.append(node("li",text)); }
+      const diagnostic = current().diagnostics;
+      if(!diagnostic) line("Esta corrida no guardó los motivos de decisión. Podés localizar las diferencias; las nuevas corridas guardan el detalle automáticamente.");
+      else {
+        const preliminary = diagnostic.preliminary_segments.filter(item => item.start <= t && t < item.end);
+        const runs = diagnostic.candidate_runs.filter(item => item.start <= t && t < item.end);
+        if(!preliminary.length) line("Sin decisión preliminar registrada en este instante.");
+        for(const item of preliminary) {
+          line(`Decisión preliminar: ${item.reasons.map(reason => reasons[reason] || reason).join("; ")}.`);
+          line(`IDs de rostros detectados: ${item.visible_face_ids.length ? item.visible_face_ids.join(", ") : "ninguno"}. Score crudo: ${item.raw_score === null ? "sin dato" : item.raw_score.toFixed(3)}.`);
+        }
+        for(const run of runs) {
+          line(`Segmento ${clock(run.start)} – ${clock(run.end)}: ${run.reasons.map(reason => reasons[reason] || reason).join("; ")}.`);
+          line(`Duración ${seconds(run.end-run.start)} · cobertura ${(run.face_visibility_fraction*100).toFixed(1)} % · mayor hueco sin detección ${seconds(run.maximum_face_gap_seconds)}.`);
+          if(contains(run.bridged_gaps,t)) line("Este instante se conserva por continuidad: hay evidencia positiva antes y después de una interrupción breve.");
+        }
+        if(!runs.length && preliminary.some(item => item.status === "candidate")) line("No hay un segmento final registrado que cubra este instante.");
+      }
+      drawTimeline(t);
+    }
+    function onTime() {
+      const [start,end] = current().window;
+      if(video.currentTime < start) { seek(start); return; }
+      if(video.currentTime >= (playbackEnd ?? end)) {
+        const stop = playbackEnd ?? end; video.pause(); playbackEnd = null;
+        if(video.currentTime > stop) video.currentTime = stop;
+        update(stop); return;
+      }
+      update(video.currentTime);
+    }
+    $("case-select").addEventListener("change",event => chooseCase(Number(event.target.value)));
+    $("filter").addEventListener("change",() => { activeDifference=-1; playbackEnd=null; view=[...current().window]; renderDifferences(); update(video.currentTime); });
+    $("next").addEventListener("click",() => pickDifference(activeDifference+1));
+    $("previous").addEventListener("click",() => pickDifference(activeDifference<0 ? filteredDifferences().length-1 : activeDifference-1));
+    $("reset-view").addEventListener("click",() => { view=[...current().window]; update(video.currentTime); });
+    $("seek").addEventListener("input",event => { playbackEnd=null; seek(Number(event.target.value)); });
+    $("timeline").addEventListener("click",event => {
+      const rect = $("timeline").getBoundingClientRect();
+      const fraction = Math.max(0,Math.min(1,((event.clientX-rect.left)/rect.width*1000-115)/870));
+      playbackEnd=null; seek(view[0]+fraction*(view[1]-view[0]));
+    });
+    $("play-context").addEventListener("click",async () => {
+      const r = filteredDifferences()[activeDifference]; if(!r || video.readyState < 1) return;
+      playbackEnd=Math.min(current().window[1],r.end+1.5); seek(Math.max(current().window[0],r.start-1.5));
+      try { await video.play(); } catch { $("media-error").textContent="El navegador no pudo iniciar la reproducción. Usá los controles del video."; $("media-error").hidden=false; }
+    });
+    video.addEventListener("loadedmetadata",() => {
+      if(Number.isFinite(video.duration) && video.duration+0.05 < current().window[1]) {
+        $("media-error").textContent="La ventana anotada supera la duración reproducible del video. Revisá los tiempos de las anotaciones."; $("media-error").hidden=false;
+      }
+      seek(pendingSeek ?? current().window[0]);
+    });
+    video.addEventListener("error",() => {
+      $("media-error").textContent="No se pudo reproducir el video. Abrí este HTML como archivo local, conservá la ruta del video y comprobá que el navegador admita su formato.";
+      $("media-error").hidden=false;
+    });
+    video.addEventListener("timeupdate",onTime);
+    video.addEventListener("seeking",onTime);
+    const duration = REPORT.cases.reduce((sum,c) => sum+c.window[1]-c.window[0],0);
+    $("dataset-summary").textContent=`${REPORT.cases.length} casos · ${new Set(REPORT.cases.map(c=>c.file)).size} videos fuente · ${seconds(duration)} en ventanas`;
+    $("total-errors").textContent=`${seconds(REPORT.overall.false_positive_seconds+REPORT.overall.false_negative_seconds)} de diferencias`;
+    for(const [index,c] of REPORT.cases.entries()) {
+      const option = node("option",`${index+1}. ${c.file} · ${clock(c.window[0])} – ${clock(c.window[1])}`); option.value=String(index); $("case-select").append(option);
+      const tr = node("tr"), cell = node("td"), button = node("button",`${c.file} · ${clock(c.window[0])} – ${clock(c.window[1])}`);
+      button.addEventListener("click",() => { chooseCase(index); $("case-name").scrollIntoView({behavior:"smooth",block:"start"}); }); cell.append(button); tr.append(cell);
+      for(const text of [ratio(c.metrics.precision),ratio(c.metrics.recall),seconds(c.metrics.false_positive_seconds),seconds(c.metrics.false_negative_seconds)]) tr.append(node("td",text));
+      $("case-table").append(tr);
+    }
+    showMetrics($("overall-metrics"),REPORT.overall);
+    $("provenance").textContent=`TalkingFaceKit ${REPORT.package_version || "sin versión"} · código ${REPORT.code_revision || "sin revisión"} · manifiesto ${REPORT.manifest_sha256 || "sin hash registrado"}`;
+    chooseCase(0);
+  </script>
+</body>
+</html>

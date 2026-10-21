@@ -817,16 +817,22 @@ def _assess_candidate_run(
 
     candidate_segments = [segment for segment in segments if segment.status == "candidate"]
     raw_scores = [cast(float, segment.raw_score) for segment in candidate_segments]
-    scored_duration_seconds = sum(
+    scored_duration_seconds = math.fsum(
         segment.source_end_seconds - segment.source_start_seconds for segment in candidate_segments
     )
     duration_weighted_score = (
-        sum(
+        math.fsum(
             cast(float, segment.raw_score)
             * (segment.source_end_seconds - segment.source_start_seconds)
             for segment in candidate_segments
         )
         / scored_duration_seconds
+    )
+    minimum_raw_score = min(raw_scores)
+    maximum_raw_score = max(raw_scores)
+    # Positive duration weights guarantee these bounds; floating-point rounding may exceed them.
+    duration_weighted_score = min(
+        maximum_raw_score, max(minimum_raw_score, duration_weighted_score)
     )
     bridged_gap_intervals = tuple(
         (previous.source_end_seconds, current.source_start_seconds)
@@ -845,9 +851,9 @@ def _assess_candidate_run(
         expected_face_observation_count=expected_observation_count,
         face_visibility_fraction=visibility_fraction,
         maximum_face_gap_seconds=maximum_gap_seconds,
-        raw_score_min=min(raw_scores),
+        raw_score_min=minimum_raw_score,
         raw_score_mean=duration_weighted_score,
-        raw_score_max=max(raw_scores),
+        raw_score_max=maximum_raw_score,
         bridged_gap_intervals=bridged_gap_intervals,
     )
 

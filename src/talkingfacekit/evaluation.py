@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import cast
@@ -105,6 +106,27 @@ def load_evaluation_cases(path: Path) -> tuple[EvaluationCase, ...]:
         document = cast(object, json.loads(path.read_text(encoding="utf-8")))
     except json.JSONDecodeError as error:
         raise ValueError(f"invalid benchmark JSON: {error}") from error
+    return parse_evaluation_cases(document)
+
+
+def parse_evaluation_cases(document: object) -> tuple[EvaluationCase, ...]:
+    """Validate a decoded version-1 manifest without reading files or loading models.
+
+    Parameters
+    ----------
+    document
+        Decoded JSON manifest with schema version 1 and a non-empty ``cases`` list.
+
+    Returns
+    -------
+    tuple[EvaluationCase, ...]
+        Validated cases in input order, on the original source timeline.
+
+    Raises
+    ------
+    TypeError, ValueError
+        If the schema, timing, labels, identifiers, or paths are invalid.
+    """
     root = _mapping(document, "manifest")
     if root.get("schema_version") != 1 or isinstance(root.get("schema_version"), bool):
         raise ValueError("benchmark manifest requires schema_version 1")
@@ -142,8 +164,10 @@ def prepare_evaluation_manifest(annotations_path: Path, videos_dir: Path) -> dic
     Parameters
     ----------
     annotations_path
-        UTF-8 JSON list of objects with ``file``, ``start_seconds``, ``end_seconds``, and
-        ``selected`` (pairs of source timestamps in seconds). Each file/window pair must be unique.
+        UTF-8 JSON list, or a directory recursively containing such lists. Directory files are
+        read in relative POSIX path order; rows retain their order within each file. Objects have
+        ``file``, ``start_seconds``, ``end_seconds``, and ``selected`` (source-second pairs).
+        Each file/window pair must be unique across all annotation files.
     videos_dir
         Local directory containing the referenced videos.
 
@@ -157,37 +181,28 @@ def prepare_evaluation_manifest(annotations_path: Path, videos_dir: Path) -> dic
     FileNotFoundError
         If annotations or a required video are missing.
     TypeError, ValueError
-        If annotations have invalid paths, intervals, or duplicate cases.
+        If annotations are empty or have invalid paths, intervals, or duplicate cases.
     """
-    try:
-        document = cast(object, json.loads(annotations_path.read_text(encoding="utf-8")))
-    except json.JSONDecodeError as error:
-        raise ValueError(f"invalid annotations JSON: {error}") from error
-    rows = _array(document, "annotations")
-    if not rows:
-        raise ValueError("annotations require at least one case")
     root = videos_dir.expanduser().resolve()
     if not root.is_dir():
         raise FileNotFoundError(f"benchmark video directory not found: {videos_dir}")
     cases: list[dict[str, object]] = []
     seen_ids: set[str] = set()
     known_hashes: dict[Path, str] = {}
-    for index, row in enumerate(rows):
-        item = _mapping(row, f"annotations[{index}]")
+    for location, row in _annotation_rows(annotations_path.expanduser()):
+        item = _mapping(row, location)
         unknown = item.keys() - {"file", "start_seconds", "end_seconds", "selected"}
         if unknown:
-            raise ValueError(
-                f"annotations[{index}] has unknown fields: {', '.join(sorted(unknown))}"
-            )
-        file = _relative_video_path(item.get("file"), f"annotations[{index}].file")
+            raise ValueError(f"{location} has unknown fields: {', '.join(sorted(unknown))}")
+        file = _relative_video_path(item.get("file"), f"{location}.file")
         window = EvaluationInterval(
-            _number(item.get("start_seconds"), f"annotations[{index}].start_seconds"),
-            _number(item.get("end_seconds"), f"annotations[{index}].end_seconds"),
+            _number(item.get("start_seconds"), f"{location}.start_seconds"),
+            _number(item.get("end_seconds"), f"{location}.end_seconds"),
         )
-        selected = _intervals(item.get("selected"), f"annotations[{index}].selected", window)
+        selected = _intervals(item.get("selected"), f"{location}.selected", window)
         case_id = f"{file.as_posix()}:{window.start_seconds}-{window.end_seconds}"
         if case_id in seen_ids:
-            raise ValueError(f"duplicate benchmark case: {case_id}")
+            raise ValueError(f"duplicate benchmark case: {case_id} in {location}")
         seen_ids.add(case_id)
         video_path = root.joinpath(*file.parts).resolve()
         if not video_path.is_relative_to(root):
@@ -209,6 +224,27 @@ def prepare_evaluation_manifest(annotations_path: Path, videos_dir: Path) -> dic
             }
         )
     return {"schema_version": 1, "cases": cases}
+
+
+def _annotation_rows(path: Path) -> Iterator[tuple[str, object]]:
+    """Read legacy lists or sorted directory lists, preserving source locations for errors."""
+    sources = (
+        sorted(path.rglob("*.json"), key=lambda item: item.relative_to(path).as_posix())
+        if path.is_dir()
+        else [path]
+    )
+    if not sources:
+        raise ValueError(f"annotations directory contains no JSON files: {path}")
+    for source in sources:
+        try:
+            document = cast(object, json.loads(source.read_text(encoding="utf-8")))
+        except json.JSONDecodeError as error:
+            raise ValueError(f"invalid annotations JSON in {source}: {error}") from error
+        rows = _array(document, f"annotations in {source}")
+        if not rows:
+            raise ValueError(f"annotations require at least one case: {source}")
+        for index, row in enumerate(rows):
+            yield f"{source}[{index}]", row
 
 
 def verify_evaluation_videos(

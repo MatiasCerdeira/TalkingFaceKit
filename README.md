@@ -462,21 +462,28 @@ uv run python -m talkingfacekit render-mesh `
 
 El equipo completa un JSON simple con cuatro campos por caso: `file`, `start_seconds`,
 `end_seconds` y `selected`. La [guía de recolección](benchmark/README.md) explica cómo elegir y anotar
-los videos e incluye una [plantilla](benchmark/annotations.example.json). Videos y etiquetas se
-comparten fuera de Git. Una persona genera el manifiesto aprobado con identificadores y hashes
-automáticos y lo comparte con el resto:
+los videos e incluye una [plantilla](benchmark/annotations.example.json). Las anotaciones se guardan
+en Git, un JSON por video dentro de [`benchmark/annotations/`](benchmark/annotations/README.md).
+El [reparto](benchmark/assignments.md) coordina quién anota cada video. Los videos siguen en Drive;
+cada persona los descarga a `data/eval/videos/` conservando sus nombres.
+
+`benchmark/manifest.json` también está versionado. Después de revisar cambios en las anotaciones,
+una persona lo actualiza con identificadores y hashes automáticos y sube ambos cambios juntos:
 
 ```bash
-uv run python -m talkingfacekit prepare-benchmark data/eval/annotations.json \
-  --videos-dir data/eval/videos --output data/eval/manifest.json
+uv run python -m talkingfacekit prepare-benchmark benchmark/annotations \
+  --videos-dir data/eval/videos --output benchmark/manifest.json --overwrite
 ```
 
-El comando `evaluate-benchmark` compara los `candidate_runs` actuales con esas selecciones humanas.
-Opcionalmente, un digest versionado en Git fija el manifiesto aprobado. Se puede verificar el
-material sin cargar modelos:
+Para usar la versión compartida, actualizar el repositorio y comprobar que las anotaciones, el
+manifiesto y los videos coincidan. `--check` no escribe archivos y falla si el manifiesto quedó
+desactualizado. La verificación no carga modelos:
 
 ```bash
-uv run python -m talkingfacekit evaluate-benchmark data/eval/manifest.json \
+uv run python -m talkingfacekit prepare-benchmark benchmark/annotations \
+  --videos-dir data/eval/videos --output benchmark/manifest.json --check
+
+uv run python -m talkingfacekit evaluate-benchmark benchmark/manifest.json \
   --videos-dir data/eval/videos --verify-only
 ```
 
@@ -484,12 +491,39 @@ La corrida completa requiere el extra DeepTalk y puede guardar métricas y predi
 
 ```bash
 uv run --extra active-speaker-deeptalk python -m talkingfacekit evaluate-benchmark \
-  data/eval/manifest.json --videos-dir data/eval/videos \
+  benchmark/manifest.json --videos-dir data/eval/videos \
   --output reports/benchmark-run.json
 ```
 
-La corrida completa también verifica los archivos antes de ejecutar modelos. Si se guardó el hash
-del manifiesto aprobado en Git, agregar `--manifest-lock benchmark/manifest.sha256`.
+La corrida completa compara los `candidate_runs` con la selección humana del manifiesto y verifica
+los videos antes de ejecutar modelos. Su JSON registra el hash del manifiesto y la versión de código.
+Los JSON únicos del flujo anterior siguen admitidos por `prepare-benchmark`.
+
+Para inspeccionar dónde difieren las selecciones humanas y la librería, generar un comparador a
+partir del JSON de una corrida. No vuelve a ejecutar modelos ni modifica las anotaciones:
+
+```bash
+uv run python -m talkingfacekit render-benchmark reports/benchmark-run.json \
+  --videos-dir data/eval/videos --output reports/comparison.html
+```
+
+El HTML permite elegir un caso, reproducir su video original, comparar las bandas **Humano** y
+**Librería**, y navegar las diferencias **Conservado de más** y **Útil perdido**. Seleccionar una
+diferencia amplía su entorno; **Reproducir diferencia con contexto** reproduce desde 1,5 segundos
+antes hasta 1,5 segundos después, limitado a la ventana evaluada. El tiempo `ignore` queda excluido.
+Los límites de cada intervalo siguen visibles, incluso cuando son contiguos.
+Cuando una selección está vacía, su banda muestra **Sin intervalos conservados**. La comparación
+**Ambos descartan** indica acuerdo en el descarte; **Sin evaluar** identifica tiempo excluido.
+
+Las nuevas corridas guardan automáticamente decisiones preliminares, segmentos candidatos,
+motivos y cortes para inspeccionar qué regla se aplicó en ese instante. Los JSON anteriores también
+funcionan, pero el comparador indica cuando no tienen ese detalle. No infiere motivos ausentes.
+La tabla muestra métricas por caso y globales, recalculadas con los intervalos guardados.
+
+El comando verifica los hashes de los videos y el HTML referencia sus rutas locales sin copiarlos.
+Abrirlo como archivo local en un navegador con soporte para el formato de video y mantener las
+rutas de los videos. Su carpeta de destino debe existir; `--overwrite` permite reemplazar el HTML.
+El comparador no requiere el extra de DeepTalk. Ver la [guía de demo](docs/demo_friday.md).
 
 ## Regla principal
 

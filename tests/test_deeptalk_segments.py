@@ -533,6 +533,20 @@ def test_candidate_run_score_mean_is_weighted_by_segment_duration() -> None:
     assert run.raw_score_mean == 2.5
 
 
+@pytest.mark.parametrize("raw_score", [0.1, 0.2])
+def test_constant_candidate_score_preserves_summary_bounds(raw_score: float) -> None:
+    result = make_run_result(
+        observations=tuple(make_face(index / 25, 7) for index in range(3)),
+        segments=(make_candidate_segment(0.0, 0.1, raw_score=raw_score),),
+    )
+
+    run = build_candidate_runs(result)[0]
+
+    assert run.raw_score_min == run.raw_score_mean == run.raw_score_max == raw_score
+    assert run.status == "rejected"
+    assert run.reason_codes == ("candidate_too_short",)
+
+
 def test_rejected_or_different_face_regions_form_hard_run_boundaries() -> None:
     rejected = DeepTalkPreliminarySegment(
         source_start_seconds=1.0,

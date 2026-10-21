@@ -362,17 +362,41 @@ must be documented here before becoming public contracts.
 - A bug fix includes a regression test that fails without the fix.
 - Cross-platform code must avoid assumptions about path separators, shell syntax, and hardware.
 
-Human annotators fill a JSON list with only `file`, `start_seconds`, `end_seconds`, and `selected`.
-`prepare-benchmark` validates paths and intervals, generates case IDs and complete-file SHA-256
-hashes, and writes the versioned manifest once for sharing. Explicit source-time windows avoid
-requiring media cuts or treating estimated stream duration as an exact final timestamp. The
-annotations contain no tags or per-component labels. Raw videos and labels remain outside Git in a
-locally configured directory. An optional digest lock kept in Git identifies the approved manifest
-version. Verification of labels and media hashes runs without loading models; the
-opt-in benchmark then compares DeepTalk candidate runs with human selections by duration and writes
-a JSON report outside Git. This deliberately evaluates the current selection stage without claiming
-that structural candidates are final FLAME-ready clips. Public tests use only synthetic labels and
-tiny existing fixtures.
+Human annotators fill JSON lists with only `file`, `start_seconds`, `end_seconds`, and `selected`.
+The shared source is `benchmark/annotations/`, with one file per video and one or more completed
+windows per file. Git versions those labels and the generated `benchmark/manifest.json`; raw videos
+stay in shared storage and local ignored `data/`. Assignments and unfinished work are recorded
+separately: an empty selection is an explicit reviewed rejection, never a pending annotation.
+
+`prepare-benchmark` accepts a legacy single JSON list or recursively collects all `.json` files in
+a directory, sorted by relative POSIX path with row order preserved. It validates each source,
+reports its path on malformed JSON/rows, rejects empty inputs and duplicate file/window pairs
+across files, and caches complete-video SHA-256 hashes for repeated windows. The CLI prevents an
+output manifest inside the annotation directory. No identifiers or hashes are entered manually.
+`--check` verifies the existing manifest against freshly prepared cases without writing; annotation
+or media drift fails explicitly. It is mutually exclusive with `--overwrite`. Reviewed label changes
+and the regenerated manifest travel in the same commit; existing runs retain their original labels
+and manifest digest. The manifest schema and the single-list input remain backward compatible.
+
+Explicit source-time windows avoid requiring media cuts or treating estimated stream duration as
+an exact final timestamp. The annotations contain no tags or per-component labels. Verification of
+labels and media hashes runs without loading models; the opt-in benchmark then compares DeepTalk
+candidate runs with human selections by duration and writes a JSON report outside Git. This
+evaluates the current selection stage without claiming that structural candidates are final
+FLAME-ready clips. Public tests use only synthetic labels and tiny existing fixtures.
+
+`evaluate-benchmark` also persists optional diagnostics per case: preliminary segments, candidate
+runs (including rejections and bridged gaps), and detected shot boundaries. Version-1 results
+without this additive field remain supported. The `render-benchmark` command reads a saved result,
+reuses manifest validation, verifies local video hashes, and recomputes metrics from the stored
+human/predicted intervals. It never loads models or reads a newer annotation file. The standalone
+HTML lives under `talkingfacekit.demo`, references local videos without copying media, and provides
+human/library timelines, difference navigation, context playback, and recorded policy evidence.
+Ignored intervals have precedence in the temporal partition and are excluded from errors. Original
+interval boundaries remain visible; temporal agreement does not imply equal segment boundaries.
+Legacy results explicitly report missing diagnostics rather than inferring reasons. Rendering uses
+the packaged HTML template, escapes embedded JSON, and replaces the destination only after input
+validation and complete serialization. No runtime dependencies are added for this workflow.
 
 ## Current decisions
 

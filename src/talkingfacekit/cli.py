@@ -14,11 +14,12 @@ from typing import cast
 
 import numpy as np
 
-from talkingfacekit.demo import render_active_speaker_report
+from talkingfacekit.demo import render_active_speaker_report, render_benchmark_report
 from talkingfacekit.evaluation import (
     EvaluationInterval,
     combine_evaluation_metrics,
     load_evaluation_cases,
+    parse_evaluation_cases,
     prepare_evaluation_manifest,
     score_evaluation_case,
     verify_evaluation_videos,
@@ -64,6 +65,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _evaluate_benchmark(arguments)
         if command == "prepare-benchmark":
             return _prepare_benchmark(arguments)
+        if command == "render-benchmark":
+            saved_path = render_benchmark_report(
+                arguments.result,
+                arguments.videos_dir,
+                arguments.output,
+                overwrite=arguments.overwrite,
+            )
+            print(f"report: {saved_path}")
+            return 0
     except (
         FileNotFoundError,
         FileExistsError,
@@ -196,15 +206,23 @@ def _build_parser() -> argparse.ArgumentParser:
         "prepare-benchmark",
         help="Generate a hashed benchmark manifest from simple human annotations.",
     )
-    preparation_parser.add_argument("annotations", type=Path, help="Simple annotations JSON list.")
+    preparation_parser.add_argument(
+        "annotations", type=Path, help="Annotations JSON list or directory of JSON lists."
+    )
     preparation_parser.add_argument(
         "--videos-dir", type=Path, required=True, help="Directory containing annotated videos."
     )
     preparation_parser.add_argument(
         "--output", type=Path, required=True, help="Destination generated manifest JSON."
     )
-    preparation_parser.add_argument(
+    preparation_mode = preparation_parser.add_mutually_exclusive_group()
+    preparation_mode.add_argument(
         "--overwrite", action="store_true", help="Replace an existing manifest."
+    )
+    preparation_mode.add_argument(
+        "--check",
+        action="store_true",
+        help="Verify an existing manifest matches annotations and videos without writing.",
     )
 
     evaluation_parser = subparsers.add_parser(
@@ -235,6 +253,16 @@ def _build_parser() -> argparse.ArgumentParser:
     evaluation_parser.add_argument(
         "--overwrite", action="store_true", help="Replace an existing JSON output file."
     )
+    comparison_parser = subparsers.add_parser(
+        "render-benchmark",
+        help="Compare saved human/library intervals in an interactive HTML without inference.",
+    )
+    comparison_parser.add_argument(
+        "result", type=Path, help="Saved evaluate-benchmark JSON output."
+    )
+    comparison_parser.add_argument("--videos-dir", type=Path, required=True)
+    comparison_parser.add_argument("--output", type=Path, required=True, help="Destination .html.")
+    comparison_parser.add_argument("--overwrite", action="store_true")
     return parser
 
 
@@ -330,15 +358,27 @@ def _analyze_video(arguments: argparse.Namespace) -> int:
 
 
 def _prepare_benchmark(arguments: argparse.Namespace) -> int:
-    annotations_path = cast(Path, arguments.annotations)
+    annotations_path = cast(Path, arguments.annotations).expanduser()
     videos_dir = cast(Path, arguments.videos_dir)
-    output_path = cast(Path, arguments.output)
+    output_path = cast(Path, arguments.output).expanduser()
     overwrite = cast(bool, arguments.overwrite)
+    check = cast(bool, arguments.check)
     if output_path.resolve() == annotations_path.resolve():
         raise ValueError("manifest output must differ from the human annotations file")
-    if output_path.exists() and not overwrite:
+    if annotations_path.is_dir() and output_path.resolve().is_relative_to(
+        annotations_path.resolve()
+    ):
+        raise ValueError("manifest output must be outside the annotations directory")
+    if output_path.exists() and not overwrite and not check:
         raise FileExistsError(f"benchmark manifest already exists: {output_path}")
     manifest = prepare_evaluation_manifest(annotations_path, videos_dir)
+    if check:
+        if load_evaluation_cases(output_path) != parse_evaluation_cases(manifest):
+            raise ValueError(
+                f"benchmark manifest is out of date: {output_path}; regenerate with --overwrite"
+            )
+        print(f"manifest is up to date: {output_path}")
+        return 0
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w" if overwrite else "x", encoding="utf-8") as destination:
         destination.write(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
@@ -412,6 +452,13 @@ def _evaluate_benchmark(arguments: argparse.Namespace) -> int:
                 "backend_version": result.provenance.backend_version,
                 "candidate_policy": asdict(result.candidate_policy),
                 "issues": list(result.issues),
+                "diagnostics": {
+                    "preliminary_segments": [asdict(item) for item in result.preliminary_segments],
+                    "candidate_runs": [asdict(item) for item in result.candidate_runs],
+                    "shot_boundaries": [
+                        item.source_timestamp_seconds for item in result.shot_boundaries
+                    ],
+                },
             }
         )
     overall = combine_evaluation_metrics(tuple(case_metrics))

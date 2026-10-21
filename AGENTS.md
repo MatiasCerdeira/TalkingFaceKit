@@ -18,8 +18,11 @@ live in `docs/architecture.md`.
 - The project targets Python 3.11 and uses `uv` exclusively.
 - Use `uv sync`, `uv add`, and `uv remove`; do not use `pip` or Conda for project dependencies.
 - Commit both `pyproject.toml` and `uv.lock` when dependencies change.
-- Never commit `.venv`, credentials, datasets, generated media, model weights, checkpoints, or
-  local outputs.
+- Keep human annotation JSON files under `benchmark/annotations/` and the generated approved
+  `benchmark/manifest.json` in Git. Update the manifest with reviewed annotation changes; never
+  edit its hashes or generated case IDs manually.
+- Never commit `.venv`, credentials, raw datasets/videos, generated media, model weights,
+  checkpoints, or local outputs. Videos stay in shared storage; `data/` and `reports/` stay ignored.
 
 ## Required checks
 

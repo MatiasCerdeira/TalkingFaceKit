@@ -4,11 +4,5 @@
     "start_seconds": 30,
     "end_seconds": 90,
     "selected": [[34.2, 46.8], [58.1, 71.5]]
-  },
-  {
-    "file": "video_02.mp4",
-    "start_seconds": 0,
-    "end_seconds": 60,
-    "selected": []
   }
 ]

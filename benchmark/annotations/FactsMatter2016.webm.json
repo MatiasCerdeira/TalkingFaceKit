@@ -1,0 +1,25 @@
+[
+  {
+    "file": "FactsMatter2016.webm",
+    "start_seconds": 30,
+    "end_seconds": 120,
+    "selected": [
+      [
+        42,
+        44
+      ],
+      [
+        57,
+        58.5
+      ],
+      [
+        59,
+        67
+      ],
+      [
+        88,
+        96.5
+      ]
+    ]
+  }
+]

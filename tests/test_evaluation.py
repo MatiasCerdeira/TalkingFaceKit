@@ -268,7 +268,25 @@ def test_cli_verifies_then_scores_without_real_models(
     assert report["overall"]["recall"] == 1.0
     assert report["manifest_sha256"] == lock_path.read_text().strip()
     assert report["cases"][0]["predicted"] == [[0.2, 0.8]]
+    assert report["cases"][0]["diagnostics"]["candidate_runs"][0]["reason_codes"] == [
+        "structural_policy_passed"
+    ]
     assert "overall: precision=100.0% recall=100.0%" in capsys.readouterr().out
+
+    assert (
+        cli.main(
+            [
+                "render-benchmark",
+                str(report_path),
+                "--videos-dir",
+                str(fixture.parent),
+                "--output",
+                str(tmp_path / "comparison.html"),
+            ]
+        )
+        == 0
+    )
+    assert analyzed == [(0.0, 1.0)]
 
     lock_path.write_text("0" * 64, encoding="utf-8")
     with pytest.raises(SystemExit) as exit_info:

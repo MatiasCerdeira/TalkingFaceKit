@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "A_Flute_on_the_Space_Station.webm:0.0-90.0",
+      "file": "A_Flute_on_the_Space_Station.webm",
+      "sha256": "ef26315c82f2bf88b2bd8751d34325cbaa8b6f960d5f8cb2347cc0add925167c",
+      "start_seconds": 0.0,
+      "end_seconds": 90.0,
+      "selected": []
+    },
+    {
+      "id": "Entrevista_01.webm:0.0-38.0",
+      "file": "Entrevista_01.webm",
+      "sha256": "7903cbc0143db84bc2980f26520f3b77eade9e485d2c02f7e1622c48754cbbb3",
+      "start_seconds": 0.0,
+      "end_seconds": 38.0,
+      "selected": []
+    },
+    {
+      "id": "FactsMatter2016.webm:30.0-120.0",
+      "file": "FactsMatter2016.webm",
+      "sha256": "bccb91a9dff73548d1b4411a7d16f39dbaa415ad220446483d53b19a7993653a",
+      "start_seconds": 30.0,
+      "end_seconds": 120.0,
+      "selected": [
+        [
+          42.0,
+          44.0
+        ],
+        [
+          57.0,
+          58.5
+        ],
+        [
+          59.0,
+          67.0
+        ],
+        [
+          88.0,
+          96.5
+        ]
+      ]
+    },
+    {
+      "id": "How-to-start.mp4:90.0-180.0",
+      "file": "How-to-start.mp4",
+      "sha256": "70a0b14d9d939d8f3029abe1cc6b77c96533067e5dfdec5bed0e978cf0dadfe8",
+      "start_seconds": 90.0,
+      "end_seconds": 180.0,
+      "selected": [
+        [
+          116.5,
+          119.0
+        ],
+        [
+          137.0,
+          146.0
+        ]
+      ]
+    },
+    {
+      "id": "Piers_Sellers_JSC_2016_interview.mp4:0.0-90.0",
+      "file": "Piers_Sellers_JSC_2016_interview.mp4",
+      "sha256": "fefc84440931ebbcc32079f275c69016a2e12bd1ce4a460d11a8064ec8fe65de",
+      "start_seconds": 0.0,
+      "end_seconds": 90.0,
+      "selected": [
+        [
+          7.0,
+          12.5
+        ],
+        [
+          20.0,
+          48.0
+        ],
+        [
+          62.0,
+          69.0
+        ],
+        [
+          74.0,
+          90.0
+        ]
+      ]
+    }
+  ]
+}

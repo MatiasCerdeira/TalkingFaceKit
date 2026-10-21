@@ -62,8 +62,11 @@ Formato que completa el equipo (ver la [guía paso a paso](../../benchmark/READM
 ]
 ```
 
-`prepare-benchmark` genera automáticamente los identificadores y los hashes de los archivos. La
-corrida registra la versión de la librería. El anotador no necesita ingresar esos datos.
+Cada video tiene su JSON en `benchmark/annotations/`, versionado en Git. `prepare-benchmark` reúne
+la carpeta y genera automáticamente `benchmark/manifest.json` con identificadores y hashes; ese
+manifiesto se versiona junto con las etiquetas revisadas. Los videos siguen en almacenamiento
+compartido. `--check` detecta si el manifiesto quedó desactualizado sin modificarlo. La corrida
+registra la versión de la librería y el digest del manifiesto. El anotador no ingresa esos datos.
 
 ### ¿Anotar algo más?
 
@@ -114,5 +117,7 @@ video original. Nuestras selecciones humanas responden directamente la pregunta 
 
 **Estado técnico:** `evaluate-benchmark` ya lee un [manifiesto versionado](../../benchmark/README.md),
 verifica hashes y compara `candidate_runs` con `selected`/`ignore`. Guarda métricas y predicciones en
-JSON, sin extraer datos del HTML. Falta elegir, compartir y etiquetar los videos reales; no hay aún
-una línea base medida.
+JSON, sin extraer datos del HTML. `render-benchmark` genera un comparador interactivo desde ese JSON,
+con reproducción del video, bandas humano/librería, diferencias navegables y los motivos registrados
+por las nuevas corridas. No repite inferencia ni modifica las selecciones humanas. Falta elegir,
+compartir y etiquetar los videos reales; no hay aún una línea base medida.
