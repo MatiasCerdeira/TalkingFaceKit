@@ -19,7 +19,8 @@ un video de diagnóstico. DeepTalk-ASD es el backend experimental elegido para o
 detección/tracking de rostros, VAD y scores de hablante activo. No será parte del modelo de dominio
 ni se considera todavía una dependencia estable. TalkingFaceKit conservará los timestamps fuente,
 traducirá los outputs a contratos propios y decidirá la política de segmentos. MediaPipe se reserva
-para pose y calidad visual; SyncNet se evaluará después para sincronización A/V explícita.
+para pose y calidad visual. SyncNet-v2 verifica sincronización A/V explícita como etapa opcional
+posterior a los candidatos.
 
 Orden de implementación acordado:
 
@@ -30,7 +31,8 @@ Orden de implementación acordado:
    razones y provenance, además de un overlay inspeccionable;
 4. evaluar seis casos mínimos y decidir si conservar DeepTalk, adaptar LR-ASD directamente o
    comparar TalkNet;
-5. agregar orientación/calidad con MediaPipe y sincronización exacta con SyncNet;
+5. verificar sincronía con SyncNet — implementado como etapa experimental opcional — y agregar
+   orientación/calidad con MediaPipe;
 6. recién entonces generalizar el flujo a carpetas, datasets y ejecución batch.
 
 La generación de landmarks y meshes ya implementada se conserva como capacidad visual opcional;
@@ -283,6 +285,79 @@ El test con modelos y video reales es explícitamente opt-in y se omite en la su
 ```bash
 TALKINGFACEKIT_DEEPTALK_TEST_VIDEO=/ruta/al/video.mp4 \
   uv run --extra active-speaker-deeptalk pytest tests/test_deeptalk_e2e.py
+```
+
+### Verificar sincronización de candidatos con SyncNet
+
+La etapa opcional recibe los `candidate_runs` de DeepTalk. Reutiliza sus IDs y boxes: no vuelve a
+detectar caras ni escenas. Lee ventanas acotadas del original con PyAV, prepara recortes BGR de
+224×224 a 25 Hz y audio mono PCM de 16 kHz, y ejecuta el núcleo SyncNet-v2 en CPU. PyTorch se
+instala únicamente con el extra; no se incorpora el pipeline completo `syncnet-python` ni su
+dependencia incompatible de PySceneDetect.
+Dentro de cada video, la verificación avanza una sola vez por cada stream y conserva únicamente
+las ventanas y frames de borde necesarios, sin volver a decodificar el prefijo para cada candidato.
+
+```bash
+uv sync --extra active-speaker-deeptalk --extra synchronization-syncnet
+mkdir -p models reports/syncnet
+curl -fL https://www.robots.ox.ac.uk/~vgg/software/lipsync/data/syncnet_v2.model \
+  -o models/syncnet_v2.model
+
+uv run --extra active-speaker-deeptalk --extra synchronization-syncnet \
+  python -m talkingfacekit analyze-video data/eval/videos/Entrevista_01.webm \
+  --start-seconds 0 --end-seconds 38 --syncnet-model models/syncnet_v2.model \
+  --report reports/syncnet/entrevista.html --output reports/syncnet/entrevista.json
+```
+
+El modelo oficial se valida por SHA-256 antes de cargar tensores con `weights_only=True`. No se
+descarga automáticamente ni se guarda en Git. La atribución del código adaptado se conserva en
+`THIRD_PARTY_NOTICES.md` y en la licencia incluida con el paquete.
+
+Un offset **positivo** significa que el audio llega **tarde** respecto de la boca. Las mediciones
+se expresan en segundos y tienen pasos de 40 ms; la confianza es una diferencia cruda de distancias,
+no una probabilidad. Los defaults experimentales son tolerancia de ±80 ms y confianza mínima de
+3.0, configurables con `--sync-tolerance-ms` y `--sync-minimum-confidence`. El rango buscado es de
+±1 segundo (`--sync-maximum-offset-seconds`), reducido en ventanas cortas para conservar al menos
+un segundo de evidencia común a todos los desplazamientos. Un óptimo en el borde queda incierto.
+
+Las ventanas particionan completamente cada candidato, con un máximo de 5 segundos y mínimo de
+2 segundos para intentar medir. Nunca se unen a través de un corte ni otra identidad. Un desfase
+confiable en cualquier ventana rechaza todo ese candidato. Sólo pasa sincronía cuando todas sus
+ventanas son verificables y están dentro de la tolerancia; los casos cortos, discontinuos, débiles
+o incompletos quedan inciertos y fuera de la selección automática. Pasar sincronía aún requiere
+los filtros pendientes de orientación/calidad; no es una aceptación final para entrenamiento.
+
+La salida conserva las decisiones estructurales y añade mediciones y decisiones de sincronía,
+hash del modelo, política y tiempos. El HTML muestra la evidencia por ventana; no corrige ni
+reescribe el video. Cuando los offsets confiables cambian entre ventanas, no publica un offset
+global como si bastara desplazar toda la pista. No hay corrección automática en esta versión.
+
+Para comparar contra las anotaciones humanas fijas:
+
+```bash
+uv run --extra active-speaker-deeptalk --extra synchronization-syncnet \
+  python -m talkingfacekit evaluate-benchmark benchmark/manifest.json \
+  --videos-dir data/eval/videos --syncnet-model models/syncnet_v2.model \
+  --output reports/syncnet/benchmark-run01.json
+uv run python -m talkingfacekit render-benchmark reports/syncnet/benchmark-run01.json \
+  --videos-dir data/eval/videos --output reports/syncnet/comparison.html
+```
+
+Con el flag, las predicciones incluyen únicamente candidatos que pasaron sincronía. Sin el flag se
+conserva la evaluación estructural anterior. `--verify-only` y `render-benchmark` no cargan modelos.
+Los resultados antiguos siguen siendo legibles. La validación real, sus límites y los tiempos
+observados se documentan en [el spike de SyncNet](docs/research/syncnet_verification.md).
+
+La prueba diferencial con modelos reales es opt-in; requiere modelos de DeepTalk ya cacheados y un
+video de habla clara. Comprueba la recuperación de adelantos y atrasos PCM conocidos respecto del
+offset original del clip, sin afirmar que ese offset original sea exactamente cero:
+
+```bash
+TALKINGFACEKIT_SYNCNET_TEST_MODEL=models/syncnet_v2.model \
+TALKINGFACEKIT_SYNCNET_TEST_VIDEO=data/eval/videos/Piers_Sellers_JSC_2016_interview.mp4 \
+TALKINGFACEKIT_SYNCNET_TEST_START_SECONDS=20 \
+uv run --extra active-speaker-deeptalk --extra synchronization-syncnet \
+  pytest tests/test_syncnet_e2e.py
 ```
 
 Los trackers consumen este stream compartido en lugar de abrir el video por su cuenta. Así, la

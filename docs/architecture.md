@@ -74,6 +74,44 @@ batch execution come after the one-video result model has been validated.
 
 ## Dependency direction
 
+### Optional candidate synchronization
+
+`SyncNetVerifier` follows DeepTalk structural selection and verifies every surviving candidate;
+there is no calibrated ASD-based trigger for suspected desynchronization. It consumes existing
+track IDs, source timestamps and boxes without running another detector. Bounded 25 Hz BGR face
+crops and 16 kHz mono PCM come from the shared PyAV streams. Upstream SyncNet-v2 model architecture
+is adapted under its MIT license, with a packaged notice. The official checkpoint is explicit,
+SHA-256 checked and tensor-only loaded. The optional extra adds PyTorch; it does not install the
+full `syncnet-python` pipeline or change the selected PySceneDetect version.
+Verification advances one shared iterator for each source stream across ordered candidate
+windows, retaining only the current window and boundary frames/chunks. Prefixes are not decoded
+again for every candidate. Chunk clipping happens after reading original audio PTS so overlap
+from millisecond quantization cannot create equal trimmed chunk starts at a window boundary.
+
+Core synchronization dataclasses live in `synchronization.py`; optional loading, preprocessing,
+and inference live in `integrations/syncnet.py`. DeepTalk observations and candidate runs stay
+unchanged. CLI orchestration retains two separate results and selects from sync decisions when
+enabled. JSON stores policy, per-window evidence, per-candidate decisions, model hash and elapsed
+time; both HTML reports reflect those decisions while showing the original ASD evidence.
+
+Windows partition each candidate completely within its shot/identity bounds. The largest is five
+seconds; less than two seconds is unmeasurable. Checkpoint embeddings use the original full-scale
+BGR/int16 preprocessing. Each audio/visual tower runs once per window. Offset search compares
+feature distances at all lags on the same interior frames, avoiding upstream's zero-padded search
+edges. The search range is reduced in short windows to retain one second of common evidence.
+An optimum on either search boundary is uncertain. Audio PTS discontinuities above 1 ms, video
+sampling gaps and missing face evidence also prevent a confident measurement.
+
+Positive public offset means late audio, verified with injected PCM delays. Resolution is one
+25 Hz frame (40 ms), not sample-accurate lip alignment. Raw confidence is median search distance
+minus best distance, not a probability. Initial ±80 ms / confidence 3.0 thresholds are experimental
+and configurable; neither correct metadata nor a positive ASD score guarantees synchronization.
+Any confident out-of-tolerance window rejects its candidate; all windows must pass to retain it.
+Incomplete or uncertain measurements are excluded from automatic selection. Conflicting reliable
+offsets suppress the global estimate, preserving each window for a future optional repair.
+Failures to load or execute a model fail explicitly rather than silently passing candidates.
+This stage never rewrites source media and does not certify pending pose/quality criteria.
+
 Dependencies point toward the core:
 
 ```text

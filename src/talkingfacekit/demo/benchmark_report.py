@@ -140,6 +140,7 @@ def _build_payload(document: dict[str, object], videos_dir: Path) -> dict[str, o
                 "regions": _comparison_regions(case, predicted),
                 "metrics": asdict(scored),
                 "diagnostics": _diagnostics(row.get("diagnostics"), case.window),
+                "synchronization": _synchronization(row.get("synchronization"), case.window),
                 "issues": _strings(row.get("issues", []), "issues"),
                 "backend_version": _optional_text(row.get("backend_version")),
                 "candidate_policy": _policy(row.get("candidate_policy")),
@@ -244,6 +245,43 @@ def _diagnostics(value: object, window: EvaluationInterval) -> dict[str, object]
         raise ValueError("shot boundaries must be inside the case window")
     normalized["shot_boundaries"] = sorted(cuts)
     return normalized
+
+
+def _synchronization(value: object, window: EvaluationInterval) -> dict[str, object] | None:
+    if value is None:
+        return None
+    raw = _object(value, "synchronization")
+    result: dict[str, object] = {}
+    for key in ("windows", "decisions"):
+        records = []
+        for entry in _array(raw.get(key), f"synchronization.{key}"):
+            item = _object(entry, key)
+            _intervals(
+                [[item.get("source_start_seconds"), item.get("source_end_seconds")]], key, window
+            )
+            _face_id(item.get("face_id"))
+            allowed = (
+                {"synchronized", "offset_detected", "uncertain"}
+                if key == "windows"
+                else {"candidate", "rejected", "uncertain"}
+            )
+            if item.get("status") not in allowed:
+                raise ValueError("invalid synchronization status")
+            _strings(item.get("reason_codes"), "synchronization reason_codes")
+            for field in (
+                "estimated_offset_seconds",
+                "confidence",
+                "minimum_distance",
+                "search_limit_seconds",
+            ):
+                if item.get(field) is not None:
+                    _number(item[field], f"synchronization.{field}")
+            records.append(item)
+        result[key] = records
+    result["elapsed_seconds"] = _number(
+        raw.get("elapsed_seconds"), "synchronization elapsed_seconds"
+    )
+    return result
 
 
 def _policy(value: object) -> dict[str, float]:

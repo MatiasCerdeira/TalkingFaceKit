@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import subprocess
+import time
 from collections.abc import Sequence
 from dataclasses import asdict
 from importlib.metadata import version
@@ -25,11 +26,13 @@ from talkingfacekit.evaluation import (
     verify_evaluation_videos,
 )
 from talkingfacekit.integrations.deeptalk import DeepTalkAnalysisResult, analyze_sequence
+from talkingfacekit.integrations.syncnet import SyncNetVerifier
 from talkingfacekit.io.landmarks import load_landmark_track, save_landmark_track
 from talkingfacekit.io.video import inspect_video_metadata
 from talkingfacekit.mesh import FaceMeshTrack
 from talkingfacekit.rendering import render_face_mesh_html
 from talkingfacekit.sequence import TalkingFaceSequence
+from talkingfacekit.synchronization import SynchronizationPolicy, SynchronizationResult
 from talkingfacekit.tracking.landmarks import FaceLandmarkTrack
 from talkingfacekit.tracking.mediapipe import MediaPipeFaceTracker
 from talkingfacekit.tracking.mediapipe_mesh import build_mediapipe_face_mesh
@@ -201,6 +204,10 @@ def _build_parser() -> argparse.ArgumentParser:
             "sibling."
         ),
     )
+    analyze_parser.add_argument(
+        "--output", type=Path, help="Save analysis and sync evidence as JSON."
+    )
+    _add_syncnet_arguments(analyze_parser)
 
     preparation_parser = subparsers.add_parser(
         "prepare-benchmark",
@@ -253,6 +260,7 @@ def _build_parser() -> argparse.ArgumentParser:
     evaluation_parser.add_argument(
         "--overwrite", action="store_true", help="Replace an existing JSON output file."
     )
+    _add_syncnet_arguments(evaluation_parser)
     comparison_parser = subparsers.add_parser(
         "render-benchmark",
         help="Compare saved human/library intervals in an interactive HTML without inference.",
@@ -264,6 +272,46 @@ def _build_parser() -> argparse.ArgumentParser:
     comparison_parser.add_argument("--output", type=Path, required=True, help="Destination .html.")
     comparison_parser.add_argument("--overwrite", action="store_true")
     return parser
+
+
+def _add_syncnet_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--syncnet-model",
+        type=Path,
+        default=None,
+        help="Verify every candidate using this official local syncnet_v2.model checkpoint.",
+    )
+    parser.add_argument(
+        "--sync-tolerance-ms",
+        type=float,
+        default=80.0,
+        help="Maximum absolute offset passing sync; experimental default: 80 ms.",
+    )
+    parser.add_argument(
+        "--sync-minimum-confidence",
+        type=float,
+        default=3.0,
+        help="Minimum raw SyncNet confidence; experimental default: 3.0.",
+    )
+    parser.add_argument(
+        "--sync-maximum-offset-seconds",
+        type=float,
+        default=1.0,
+        help="Maximum offset searched in either direction; default: 1 second.",
+    )
+
+
+def _make_syncnet_verifier(arguments: argparse.Namespace) -> SyncNetVerifier | None:
+    policy = SynchronizationPolicy(
+        tolerance_seconds=arguments.sync_tolerance_ms / 1000,
+        minimum_confidence=arguments.sync_minimum_confidence,
+        maximum_offset_seconds=arguments.sync_maximum_offset_seconds,
+    )
+    if arguments.syncnet_model is None:
+        if policy != SynchronizationPolicy():
+            raise ValueError("sync thresholds require --syncnet-model")
+        return None
+    return SyncNetVerifier(arguments.syncnet_model, policy=policy)
 
 
 def _extract_landmarks(arguments: argparse.Namespace) -> int:
@@ -330,8 +378,17 @@ def _analyze_video(arguments: argparse.Namespace) -> int:
     end_seconds = cast(float | None, arguments.end_seconds)
     report_path = cast(Path | None, arguments.report)
     overwrite = cast(bool, arguments.overwrite)
-    if report_path is None and overwrite:
-        raise ValueError("--overwrite requires --report")
+    output_path = cast(Path | None, arguments.output)
+    if report_path is None and output_path is None and overwrite:
+        raise ValueError("--overwrite requires --report or --output")
+    if output_path is not None:
+        if output_path.suffix.lower() != ".json":
+            raise ValueError("analysis output must end in .json")
+        if output_path.exists() and not overwrite:
+            raise FileExistsError(f"analysis output already exists: {output_path}")
+        if output_path.resolve() == video_path.resolve():
+            raise ValueError("analysis output must differ from source video")
+    verifier = _make_syncnet_verifier(arguments)
 
     sequence = TalkingFaceSequence.from_video(video_path)
     if start_seconds is not None or end_seconds is not None:
@@ -341,18 +398,69 @@ def _analyze_video(arguments: argparse.Namespace) -> int:
     previous_logging_disable_level = logging.root.manager.disable
     logging.disable(logging.CRITICAL)
     try:
+        started = time.perf_counter()
         result = analyze_sequence(sequence)
+        deeptalk_seconds = time.perf_counter() - started
     finally:
         logging.disable(previous_logging_disable_level)
+    synchronization = None if verifier is None else verifier.verify(sequence, result)
     _print_active_speaker_summary(sequence, result)
+    if synchronization is not None:
+        _print_synchronization_summary(synchronization)
+    if output_path is not None:
+        with sequence.source.path.open("rb") as source_stream:
+            source_sha256 = hashlib.file_digest(source_stream, "sha256").hexdigest()
+        document = {
+            "schema_version": 1,
+            "source": str(sequence.source.path.resolve()),
+            "source_sha256": source_sha256,
+            "package_version": version("talkingfacekit"),
+            "code_revision": _code_revision(),
+            "interval": [sequence.start_seconds, sequence.end_seconds],
+            "face_observations": [asdict(item) for item in result.face_observations],
+            "speech_intervals": [asdict(item) for item in result.speech_intervals],
+            "score_windows": [
+                {
+                    "source_start_seconds": item.source_start_seconds,
+                    "source_end_seconds": item.source_end_seconds,
+                    "raw_scores": dict(item.raw_scores),
+                }
+                for item in result.score_windows
+            ],
+            "preliminary_segments": [asdict(item) for item in result.preliminary_segments],
+            "candidate_runs": [asdict(item) for item in result.candidate_runs],
+            "candidate_policy": asdict(result.candidate_policy),
+            "shot_boundaries": [asdict(item) for item in result.shot_boundaries],
+            "audio_timeline_repairs": [asdict(item) for item in result.audio_timeline_repairs],
+            "issues": list(result.issues),
+            "provenance": asdict(result.provenance),
+            "synchronization": None if synchronization is None else asdict(synchronization),
+            "timings": {
+                "deeptalk_seconds": deeptalk_seconds,
+                "syncnet_initialization_seconds": 0
+                if verifier is None
+                else verifier.initialization_seconds,
+            },
+        }
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps(document, indent=2, allow_nan=False) + "\n", encoding="utf-8"
+        )
+        print(f"output: {output_path}")
     if report_path is not None:
         resolved_report_path = _available_report_path(report_path, overwrite=overwrite)
-        saved_path = render_active_speaker_report(
-            sequence,
-            result,
-            resolved_report_path,
-            overwrite=overwrite,
-        )
+        if synchronization is None:
+            saved_path = render_active_speaker_report(
+                sequence, result, resolved_report_path, overwrite=overwrite
+            )
+        else:
+            saved_path = render_active_speaker_report(
+                sequence,
+                result,
+                resolved_report_path,
+                overwrite=overwrite,
+                synchronization=synchronization,
+            )
         print(f"report: {saved_path}")
     return 0
 
@@ -417,13 +525,16 @@ def _evaluate_benchmark(arguments: argparse.Namespace) -> int:
     if verify_only:
         return 0
 
+    verifier = _make_syncnet_verifier(arguments)
     case_reports: list[dict[str, object]] = []
     case_metrics = []
     for case in cases:
         sequence = TalkingFaceSequence.from_video(video_paths[case.case_id]).clip(
             case.window.start_seconds, case.window.end_seconds
         )
+        started = time.perf_counter()
         result = analyze_sequence(sequence)
+        deeptalk_seconds = time.perf_counter() - started
         if not result.score_windows:
             raise RuntimeError(f"{case.case_id}: analysis returned no score windows")
         predicted = tuple(
@@ -431,6 +542,14 @@ def _evaluate_benchmark(arguments: argparse.Namespace) -> int:
             for run in result.candidate_runs
             if run.status == "candidate"
         )
+        synchronization = None if verifier is None else verifier.verify(sequence, result)
+        if synchronization is not None:
+            predicted = tuple(
+                EvaluationInterval(item.source_start_seconds, item.source_end_seconds)
+                for item in synchronization.decisions
+                if item.status == "candidate"
+            )
+            _print_synchronization_summary(synchronization)
         metrics = score_evaluation_case(case, predicted)
         case_metrics.append(metrics)
         print(
@@ -452,6 +571,8 @@ def _evaluate_benchmark(arguments: argparse.Namespace) -> int:
                 "backend_version": result.provenance.backend_version,
                 "candidate_policy": asdict(result.candidate_policy),
                 "issues": list(result.issues),
+                "synchronization": None if synchronization is None else asdict(synchronization),
+                "timings": {"deeptalk_seconds": deeptalk_seconds},
                 "diagnostics": {
                     "preliminary_segments": [asdict(item) for item in result.preliminary_segments],
                     "candidate_runs": [asdict(item) for item in result.candidate_runs],
@@ -477,6 +598,9 @@ def _evaluate_benchmark(arguments: argparse.Namespace) -> int:
             "manifest_sha256": manifest_digest,
             "cases": case_reports,
             "overall": asdict(overall),
+            "syncnet_initialization_seconds": None
+            if verifier is None
+            else verifier.initialization_seconds,
         }
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(
@@ -484,6 +608,29 @@ def _evaluate_benchmark(arguments: argparse.Namespace) -> int:
         )
         print(f"output: {output_path}")
     return 0
+
+
+def _print_synchronization_summary(result: SynchronizationResult) -> None:
+    print(
+        f"synchronization: {result.backend}, {result.elapsed_seconds:.2f}s; positive offset = late audio"
+    )
+    for window in result.windows:
+        offset = (
+            "not measurable"
+            if window.estimated_offset_seconds is None
+            else f"{window.estimated_offset_seconds * 1000:+.0f}ms"
+        )
+        confidence = "n/a" if window.confidence is None else f"{window.confidence:.3f}"
+        print(
+            f"  [{window.source_start_seconds:.3f}, {window.source_end_seconds:.3f}) "
+            f"face_{window.face_id} {window.status} offset={offset} confidence={confidence} "
+            f"({','.join(window.reason_codes)})"
+        )
+    for decision in result.decisions:
+        print(
+            f"  sync decision [{decision.source_start_seconds:.3f}, {decision.source_end_seconds:.3f}): "
+            f"{decision.status} ({','.join(decision.reason_codes)})"
+        )
 
 
 def _format_ratio(value: float | None) -> str:

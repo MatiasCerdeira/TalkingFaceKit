@@ -7,8 +7,14 @@ modelos existentes con reglas propias de selección y continuidad, y muestra la 
 cada decisión. El benchmark permite comparar esa selección con el criterio humano.
 
 Los candidatos actuales pasan reglas de habla, rostro único, score de hablante activo, cortes,
-duración y cobertura de detecciones. La aceptación final para entrenamiento todavía requiere
-criterios de orientación, calidad y sincronización audiovisual.
+duración y cobertura de detecciones. La etapa opcional SyncNet verifica voz y labios sobre esos
+candidatos: rechaza desfases confirmados y deja fuera de la selección automática los casos
+inciertos. La aceptación final para entrenamiento todavía requiere orientación y calidad visual.
+
+Antes de ejecutar, instalar el extra y descargar el modelo según la sección SyncNet del README.
+Para la comparación actual, mantener la corrida estructural anterior y una nueva con SyncNet.
+En `Entrevista_01.webm`, explicar por separado los desfases confirmados y las ventanas inciertas:
+ambas quedan fuera de la selección automática, pero sólo las primeras confirman un offset.
 
 ## Recorrido propuesto: 7 a 10 minutos
 
@@ -19,7 +25,7 @@ criterios de orientación, calidad y sincronización audiovisual.
 | 2 minutos | Dos decisiones y sus motivos | Nuestro código combina esa evidencia. Un corte detectado divide segmentos; una pausa breve puede mantenerse dentro de un mismo plano. PySceneDetect aporta los cortes. |
 | 1 a 2 minutos | Resultados del benchmark por video y en total | Comparar las predicciones con anotaciones humanas: precisión, recall, segundos mal conservados y segundos útiles perdidos. |
 | 1 minuto | Una diferencia concreta respecto del humano | Mostrar el instante, explicar la causa observada y distinguirla de una hipótesis pendiente. |
-| 1 minuto | Alcance actual y siguiente paso | Orientación y calidad ya se muestran como datos; faltan sus reglas de aceptación. La sincronización exacta todavía no se mide. |
+| 1 minuto | Alcance actual y siguiente paso | Orientación y calidad ya se muestran como datos; faltan sus reglas. SyncNet estima offsets en pasos de 40 ms con confianza y umbrales experimentales. |
 
 Los tiempos son una guía de ensayo, no una obligación de mostrar todos los paneles.
 
@@ -49,9 +55,9 @@ mkdir -p reports/demo
 uv run python -m talkingfacekit prepare-benchmark benchmark/annotations \
   --videos-dir data/eval/videos --output benchmark/manifest.json --check
 
-uv run --extra active-speaker-deeptalk python -m talkingfacekit evaluate-benchmark \
+uv run --extra active-speaker-deeptalk --extra synchronization-syncnet python -m talkingfacekit evaluate-benchmark \
   benchmark/manifest.json --videos-dir data/eval/videos \
-  --output reports/demo/benchmark-run01.json
+  --syncnet-model models/syncnet_v2.model --output reports/demo/benchmark-run01.json
 ```
 
 Reutilizar el manifiesto aprobado que viene con el repositorio. Si cambia el conjunto, revisar las
@@ -62,9 +68,9 @@ Para generar el HTML diagnóstico de una de las ventanas elegidas, reemplazar el
 límites del siguiente ejemplo por los reales. Los valores del ejemplo no son anotaciones:
 
 ```bash
-uv run --extra active-speaker-deeptalk python -m talkingfacekit analyze-video \
+uv run --extra active-speaker-deeptalk --extra synchronization-syncnet python -m talkingfacekit analyze-video \
   data/eval/videos/video_01.mp4 --start-seconds 30 --end-seconds 90 \
-  --report reports/demo/video-01.html
+  --syncnet-model models/syncnet_v2.model --report reports/demo/video-01.html
 ```
 
 El benchmark actual guarda métricas e intervalos en JSON. El HTML diagnóstico se genera por separado

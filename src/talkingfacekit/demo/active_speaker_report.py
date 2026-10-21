@@ -6,11 +6,13 @@ import html
 import json
 import math
 from collections import defaultdict
+from dataclasses import asdict
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from talkingfacekit.integrations.deeptalk import DeepTalkAnalysisResult
 from talkingfacekit.sequence import TalkingFaceSequence
+from talkingfacekit.synchronization import SynchronizationResult
 
 _REPORT_TEMPLATE = r"""<!doctype html>
 <html lang="es">
@@ -230,6 +232,11 @@ _REPORT_TEMPLATE = r"""<!doctype html>
       <div class="decision-list" id="decision-list"></div>
       <div class="timeline-help">Verde significa conservar en esta etapa; rojo, descartar; gris, revisar. Hacé click en una fila para saltar al comienzo del segmento.</div>
     </section>
+    <section class="panel decision-summary" id="sync-panel" hidden>
+      <h2>Sincronización de voz y labios</h2>
+      <p class="note" id="sync-note"></p>
+      <div class="decision-list" id="sync-windows"></div>
+    </section>
   </main>
   <script>
     "use strict";
@@ -286,7 +293,23 @@ _REPORT_TEMPLATE = r"""<!doctype html>
         structural_policy_passed: "pasó duración, cobertura y estabilidad",
         candidate_too_short: "segmento demasiado corto",
         insufficient_face_coverage: "cobertura de rostro insuficiente",
-        unstable_face_visibility: "visibilidad del rostro inestable"
+        unstable_face_visibility: "visibilidad del rostro inestable",
+        audio_video_offset: "desfase audiovisual confirmado",
+        synchronization_passed: "pasó la verificación de sincronía",
+        synchronization_not_verified: "sincronía no verificable: excluido de selección automática",
+        inconsistent_audio_video_offsets: "el desfase cambia entre ventanas",
+        sync_low_confidence: "confianza de sincronía insuficiente",
+        sync_search_boundary: "óptimo en el límite del rango: desfase no confirmado",
+        sync_window_too_short: "ventana demasiado corta para medir sincronía",
+        sync_insufficient_evidence: "evidencia de sincronía insuficiente",
+        sync_audio_timeline_discontinuity: "discontinuidad en timestamps de audio",
+        sync_audio_incomplete: "audio incompleto",
+        sync_audio_format_changed: "cambió el formato de audio",
+        sync_face_track_missing: "falta el track de la cara",
+        sync_face_track_gap: "faltan detecciones de la cara",
+        sync_face_outside_frame: "cara fuera del cuadro",
+        sync_video_missing: "faltan frames de video",
+        sync_video_timestamp_gap: "faltan frames cercanos al tiempo esperado"
       };
       return reasons.map(reason => labels[reason] || reason).join(" · ");
     }
@@ -329,6 +352,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
       const speech = containingInterval(REPORT.speechIntervals, sourceTime);
       const preliminarySegment = containingInterval(REPORT.preliminarySegments, sourceTime);
       const candidateRun = containingInterval(REPORT.candidateRuns, sourceTime);
+      const syncDecision = (REPORT.synchronization?.decisions || []).find(item => item.source_start_seconds <= sourceTime && sourceTime < item.source_end_seconds);
       const scores = scoreWindow ? scoreWindow[2] : [];
       const speechActive = speech !== null && speech[2] !== "rejected";
       let candidate = null;
@@ -336,7 +360,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
         candidate = scores.reduce((best, item) => item[1] > best[1] ? item : best);
       }
       return {
-        scoreWindow, speech, preliminarySegment, candidateRun, scores, speechActive, candidate
+        scoreWindow, speech, preliminarySegment, candidateRun, syncDecision, scores, speechActive, candidate
       };
     }
 
@@ -387,7 +411,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
     function updateSide(sourceTime, evidence) {
       const signature = JSON.stringify([
         Math.floor(sourceTime * 10), evidence.speech, evidence.preliminarySegment,
-        evidence.candidateRun, evidence.scores
+        evidence.candidateRun, evidence.syncDecision, evidence.scores
       ]);
       if (signature === lastSideSignature) return;
       lastSideSignature = signature;
@@ -423,6 +447,13 @@ _REPORT_TEMPLATE = r"""<!doctype html>
             ? ` · puentes ${run[13].length} (${run[13].reduce((total, gap) => total + gap[1] - gap[0], 0).toFixed(2)}s)`
             : "";
           candidateDetail.textContent = `${formatReasons(run[4])}${instantaneous}${bridgeSummary} · duración ${run[5].toFixed(2)}s (mín. ${REPORT.candidatePolicy.minimumDurationSeconds.toFixed(2)}s) · cobertura ${(run[6] * 100).toFixed(1)}% (${run[11]}/${run[12]}, mín. ${(REPORT.candidatePolicy.minimumFaceCoverage * 100).toFixed(1)}%) · hueco máx. ${run[7].toFixed(3)}s (límite ${REPORT.candidatePolicy.maximumFaceGapSeconds.toFixed(3)}s)`;
+          if (evidence.syncDecision) {
+            const sync = evidence.syncDecision;
+            segmentDecision.classList.remove("keep", "rejected", "uncertain");
+            segmentDecision.classList.add(sync.status === "candidate" ? "keep" : sync.status === "rejected" ? "rejected" : "uncertain");
+            candidateTitle.textContent = `${sync.status === "candidate" ? "CANDIDATO CON SINCRONÍA VERIFICADA" : sync.status === "rejected" ? "DESCARTAR POR DESFASE" : "REVISAR SINCRONÍA"} · Face ${run[3]}`;
+            candidateDetail.textContent += ` · ${formatReasons(sync.reason_codes)}${sync.estimated_offset_seconds === null ? "" : ` · offset ${(sync.estimated_offset_seconds * 1000).toFixed(0)} ms (positivo = audio atrasado)`}`;
+          }
         } else if (evidence.preliminarySegment) {
           const segment = evidence.preliminarySegment;
           const status = segment[2];
@@ -517,7 +548,9 @@ _REPORT_TEMPLATE = r"""<!doctype html>
         timelineContext.fillRect(x(segment[0]), top + plotHeight - 7, x(segment[1]) - x(segment[0]), 7);
       }
       for (const run of REPORT.candidateRuns) {
-        timelineContext.fillStyle = run[2] === "candidate" ? "#42c68a" : "#f06a6a";
+        const sync = (REPORT.synchronization?.decisions || []).find(item => Math.abs(item.source_start_seconds - run[0]) < 1e-6 && item.face_id === run[3]);
+        const status = sync?.status || run[2];
+        timelineContext.fillStyle = status === "candidate" ? "#42c68a" : status === "uncertain" ? "#9aa7b8" : "#f06a6a";
         timelineContext.fillRect(x(run[0]), top + plotHeight - 16, x(run[1]) - x(run[0]), 7);
       }
       timelineContext.strokeStyle = "#353c46";
@@ -586,12 +619,15 @@ _REPORT_TEMPLATE = r"""<!doctype html>
     }
 
     function finalDecisions() {
-      const decisions = REPORT.candidateRuns.map(run => ({
+      const decisions = REPORT.candidateRuns.map(run => {
+        const sync = (REPORT.synchronization?.decisions || []).find(item => Math.abs(item.source_start_seconds - run[0]) < 1e-6 && item.face_id === run[3]);
+        const status = sync?.status || run[2];
+        return ({
         start: run[0],
         end: run[1],
-        decision: run[2] === "candidate" ? "keep" : "discard",
+        decision: status === "candidate" ? "keep" : status === "uncertain" ? "review" : "discard",
         faceId: run[3],
-        reasons: run[4],
+        reasons: [...run[4], ...(sync?.reason_codes || [])],
         duration: run[5],
         coverage: run[6],
         maximumGap: run[7],
@@ -599,7 +635,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
         expectedCount: run[12],
         bridgedGaps: run[13],
         kind: "run"
-      }));
+      }); });
       for (const segment of REPORT.preliminarySegments) {
         if (segment[2] === "candidate") {
           const middle = (segment[0] + segment[1]) / 2;
@@ -730,6 +766,33 @@ _REPORT_TEMPLATE = r"""<!doctype html>
       }
     }
 
+    function buildSynchronizationSummary() {
+      const sync = REPORT.synchronization;
+      if (!sync) return;
+      document.getElementById("sync-panel").hidden = false;
+      document.getElementById("sync-note").textContent = `${sync.backend} · ${sync.elapsed_seconds.toFixed(2)} s de verificación · tolerancia ±${(sync.policy.tolerance_seconds * 1000).toFixed(0)} ms · confianza mínima ${sync.policy.minimum_confidence}. Offset positivo: audio atrasado. Los casos inciertos quedan fuera de la selección automática. Pasar esta etapa todavía requiere orientación y calidad visual.`;
+      const list = document.getElementById("sync-windows");
+      for (const item of sync.windows) {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = `decision-row ${item.status === "synchronized" ? "keep" : item.status === "offset_detected" ? "discard" : "review"}`;
+        const offset = item.estimated_offset_seconds === null ? "sin medición" : `${(item.estimated_offset_seconds * 1000).toFixed(0)} ms`;
+        const confidence = item.confidence === null ? "—" : item.confidence.toFixed(2);
+        const primary = document.createElement("span");
+        primary.className = "decision-primary";
+        primary.textContent = `${item.status === "synchronized" ? "SINCRONÍA VERIFICADA" : item.status === "offset_detected" ? "DESFASE CONFIRMADO" : "REVISAR"} · Face ${item.face_id}`;
+        const interval = document.createElement("span");
+        interval.className = "decision-interval";
+        interval.textContent = `${formatTime(item.source_start_seconds)} – ${formatTime(item.source_end_seconds)}`;
+        const evidence = document.createElement("span");
+        evidence.className = "decision-evidence";
+        evidence.textContent = `${offset}${item.status === "uncertain" && item.estimated_offset_seconds !== null ? " (no confirmado)" : ""} · confianza ${confidence} · ${formatReasons(item.reason_codes)}`;
+        row.append(primary, interval, evidence);
+        row.addEventListener("click", () => {video.currentTime = item.source_start_seconds; render();});
+        list.append(row);
+      }
+    }
+
     video.addEventListener("loadedmetadata", () => {
       if (video.currentTime < REPORT.interval.start || video.currentTime >= REPORT.interval.end) {
         video.currentTime = REPORT.interval.start;
@@ -753,6 +816,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
     window.addEventListener("resize", render);
     buildLegend();
     buildDecisionSummary();
+    buildSynchronizationSummary();
     render();
   </script>
 </body>
@@ -766,6 +830,7 @@ def render_active_speaker_report(
     output_path: str | Path,
     *,
     overwrite: bool = False,
+    synchronization: SynchronizationResult | None = None,
 ) -> Path:
     """Render a browser-based diagnostic report beside an unchanged source video.
 
@@ -786,6 +851,9 @@ def render_active_speaker_report(
         Destination ending in ``.html``. Its parent directory must already exist.
     overwrite
         Whether an existing regular file may be replaced after the complete report is built.
+    synchronization
+        Optional candidate verification. Decisions override structural selection in the UI;
+        original raw evidence remains visible. Positive offsets mean late audio.
 
     Returns
     -------
@@ -813,6 +881,7 @@ def render_active_speaker_report(
     source_path = _validate_source_path(sequence.source.path)
     path = _validate_output_path(output_path, overwrite=overwrite)
     payload = _build_report_payload(sequence, result, source_path=source_path)
+    payload["synchronization"] = None if synchronization is None else asdict(synchronization)
     report_title = f"TalkingFaceKit active speaker report · {source_path.name}"
     report_html = _REPORT_TEMPLATE.replace("__REPORT_TITLE__", html.escape(report_title)).replace(
         "__REPORT_DATA__",

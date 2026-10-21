@@ -8,6 +8,12 @@ from talkingfacekit.mesh import FaceMeshTrack
 from talkingfacekit.metadata import VideoMetadata
 from talkingfacekit.rendering import render_face_mesh_html
 from talkingfacekit.sequence import TalkingFaceSequence
+from talkingfacekit.synchronization import (
+    SynchronizationDecision,
+    SynchronizationPolicy,
+    SynchronizationResult,
+    SynchronizationWindow,
+)
 from talkingfacekit.tracking import FaceLandmarkTrack, LandmarkTracker
 from talkingfacekit.tracking.mediapipe_mesh import build_mediapipe_face_mesh
 from talkingfacekit.video import DecodedVideoFrame, VideoSource
@@ -18,6 +24,10 @@ __all__ = [
     "FaceLandmarkTrack",
     "FaceMeshTrack",
     "LandmarkTracker",
+    "SynchronizationDecision",
+    "SynchronizationPolicy",
+    "SynchronizationResult",
+    "SynchronizationWindow",
     "TalkingFaceSequence",
     "VideoMetadata",
     "VideoSource",

@@ -1,4 +1,6 @@
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,13 @@ from talkingfacekit.integrations.deeptalk import (
     DeepTalkScoreWindow,
     DeepTalkShotBoundary,
     DeepTalkSpeechInterval,
+)
+from talkingfacekit.synchronization import (
+    SynchronizationPolicy,
+    SynchronizationResult,
+    SynchronizationWindow,
+    SyncStatus,
+    decide_synchronization,
 )
 
 
@@ -272,6 +281,52 @@ def test_requires_explicit_overwrite_and_replaces_only_after_rendering(tmp_path:
         overwrite=True,
     )
     assert "const REPORT" in output_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "status,offset,label,decision,reason",
+    [
+        ("offset_detected", 0.32, "DESCARTAR POR DESFASE", "discard", "audio_video_offset"),
+        ("synchronized", 0, "CANDIDATO CON SINCRONÍA VERIFICADA", "keep", "synchronization_passed"),
+        ("uncertain", None, "REVISAR SINCRONÍA", "review", "synchronization_not_verified"),
+    ],
+)
+def test_sync_decisions_override_raw_candidates_in_generated_ui(
+    tmp_path: Path,
+    status: SyncStatus,
+    offset: float | None,
+    label: str,
+    decision: str,
+    reason: str,
+) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required only for offline JavaScript interactions")
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"offline media placeholder")
+    policy = SynchronizationPolicy()
+    window = SynchronizationWindow(0.6, 1.4, 2, status, (reason,), offset, 8, 6, 1)
+    sync = SynchronizationResult(
+        policy, (window,), (decide_synchronization(0.6, 1.4, 2, (window,), policy),), "a" * 64, 0.5
+    )
+    output = render_active_speaker_report(
+        make_sequence(source), make_result(), tmp_path / "report.html", synchronization=sync
+    )
+    completed = subprocess.run(
+        [
+            node,
+            str(Path(__file__).with_name("active_speaker_sync_ui.cjs")),
+            str(output),
+            label,
+            decision,
+            reason,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=15,
+    )
+    assert "Synchronization UI interactions passed" in completed.stdout
 
 
 def test_validates_source_and_destination_paths(tmp_path: Path) -> None:

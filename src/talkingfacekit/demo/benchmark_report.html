@@ -134,7 +134,8 @@
   </main>
   <footer><p>La comparación mide selección temporal. Dos segmentos contiguos pueden coincidir por tiempo y tener fronteras distintas.
     Los motivos muestran reglas registradas; no demuestran por sí solos la causa de un error del modelo.
-    «Conservar» significa candidato en la etapa actual, pendiente de criterios finales de orientación, calidad y sincronización.</p>
+    «Conservar» significa candidato en las etapas ejecutadas, pendiente de criterios finales de orientación y calidad.
+    Las corridas con SyncNet excluyen desfases confirmados y casos de sincronía incierta; las corridas anteriores sólo evalúan la selección estructural.</p>
     <p id="provenance"></p></footer>
   <script>
     "use strict";
@@ -150,7 +151,11 @@
       no_active_speaker_score:"Falta el score de hablante activo",non_positive_active_speaker_score:"El score de hablante activo no fue positivo",
       single_visible_face:"Un solo rostro detectado",positive_raw_active_speaker_score:"Score de hablante activo positivo",
       structural_policy_passed:"Cumple las reglas de duración y cobertura",candidate_too_short:"El segmento es demasiado corto",
-      insufficient_face_coverage:"Cobertura de detecciones insuficiente",unstable_face_visibility:"Hueco sin detectar el rostro demasiado largo"};
+      insufficient_face_coverage:"Cobertura de detecciones insuficiente",unstable_face_visibility:"Hueco sin detectar el rostro demasiado largo",
+      audio_video_offset:"Desfase audiovisual confirmado",synchronization_passed:"Pasó la verificación de sincronía",
+      synchronization_not_verified:"Sincronía no verificada: excluido de selección automática",
+      inconsistent_audio_video_offsets:"El desfase cambia entre ventanas",sync_low_confidence:"Confianza insuficiente",
+      sync_search_boundary:"Óptimo en el borde del rango: desfase no confirmado",sync_window_too_short:"Ventana demasiado corta"};
     const policyLabels = {minimum_duration_seconds:"Duración mínima (s)",minimum_face_coverage:"Cobertura mínima (fracción)",
       maximum_face_gap_seconds:"Mayor hueco sin rostro permitido (s)",maximum_bridge_gap_seconds:"Interrupción breve máxima (s)"};
     let caseIndex = 0, activeDifference = -1, view = [0,1], playbackEnd = null, pendingSeek = null;
@@ -268,6 +273,18 @@
       $("status").style.borderColor = colors[r?.status] || "#6fb6ff";
       const evidence = $("evidence"); evidence.replaceChildren();
       function line(text) { evidence.append(node("li",text)); }
+      const synchronization = current().synchronization;
+      if(synchronization) {
+        const decisions = synchronization.decisions.filter(item => item.source_start_seconds <= t && t < item.source_end_seconds);
+        const windows = synchronization.windows.filter(item => item.source_start_seconds <= t && t < item.source_end_seconds);
+        const syncLabels = {candidate:"Pasó sincronía",rejected:"Descartado por desfase",uncertain:"Revisar: sincronía no verificada"};
+        for(const item of decisions) line(`SyncNet: ${syncLabels[item.status]}. ${item.reason_codes.map(reason=>reasons[reason]||reason).join("; ")}.`);
+        for(const item of windows) {
+          const offset = item.estimated_offset_seconds === null ? "sin medición" : `${(item.estimated_offset_seconds*1000).toFixed(0)} ms (positivo = audio atrasado)`;
+          line(`Ventana de sincronía: ${offset}${item.status === "uncertain" ? " (no confirmado)" : ""}; confianza ${item.confidence === null ? "sin dato" : item.confidence.toFixed(2)}; ${item.reason_codes.map(reason=>reasons[reason]||reason).join("; ")}.`);
+        }
+        if(!decisions.length) line("Este instante no necesitó verificación de sincronía: no era candidato estructural.");
+      }
       const diagnostic = current().diagnostics;
       if(!diagnostic) line("Esta corrida no guardó los motivos de decisión. Podés localizar las diferencias; las nuevas corridas guardan el detalle automáticamente.");
       else {
