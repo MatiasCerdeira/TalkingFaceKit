@@ -18,9 +18,10 @@ El primer milestone será un analizador de **un solo video** que genere resultad
 un video de diagnóstico. DeepTalk-ASD es el backend experimental elegido para obtener rápidamente
 detección/tracking de rostros, VAD y scores de hablante activo. No será parte del modelo de dominio
 ni se considera todavía una dependencia estable. TalkingFaceKit conservará los timestamps fuente,
-traducirá los outputs a contratos propios y decidirá la política de segmentos. MediaPipe se reserva
-para pose y calidad visual. SyncNet-v2 verifica sincronización A/V explícita como etapa opcional
-posterior a los candidatos.
+traducirá los outputs a contratos propios y decidirá la política de segmentos. La pose de InspireFace
+y sus bounding boxes alimentan un filtro visual experimental opcional; MediaPipe conserva su flujo
+de landmarks y mesh. SyncNet-v2 verifica sincronización A/V explícita como etapa opcional posterior
+a los candidatos.
 
 Orden de implementación acordado:
 
@@ -32,7 +33,7 @@ Orden de implementación acordado:
 4. evaluar seis casos mínimos y decidir si conservar DeepTalk, adaptar LR-ASD directamente o
    comparar TalkNet;
 5. verificar sincronía con SyncNet — implementado como etapa experimental opcional — y agregar
-   orientación/calidad con MediaPipe;
+   orientación/tamaño/encuadre con la evidencia existente — implementado como filtro opcional;
 6. recién entonces generalizar el flujo a carpetas, datasets y ejecución batch.
 
 La generación de landmarks y meshes ya implementada se conserva como capacidad visual opcional;
@@ -41,8 +42,8 @@ encuentran en [`PROJECT_DIRECTION.md`](PROJECT_DIRECTION.md), el
 [`roadmap`](docs/blueprint/roadmap.md) y el
 [`spike de DeepTalk-ASD`](docs/research/deeptalk_asd_compatibility.md).
 
-> **Estado:** el flujo de análisis descripto arriba es dirección de producto, no API disponible.
-> La sección siguiente enumera únicamente lo que funciona hoy.
+> **Estado:** análisis de un video, benchmark, sincronía y filtro visual están disponibles como
+> flujos experimentales. Colecciones, mirada ocular y evaluación integral de calidad siguen pendientes.
 
 ## Funcionalidad actual
 
@@ -199,8 +200,8 @@ uv run --extra active-speaker-deeptalk python -m talkingfacekit analyze-video \
 Al abrir el HTML en el navegador, los boxes, IDs, pose, calidad, scores crudos, estado de voz,
 cortes de plano y cursor de la timeline siguen el tiempo del reproductor. El rostro con mayor score
 durante un intervalo de voz se marca como `top candidate`, nunca como probabilidad o decisión
-final. Los ángulos y la calidad también se muestran como evidencia cruda, todavía sin thresholds
-de aceptación. Hacer click en el gráfico mueve el video a ese instante. El archivo depende de que
+final. Los ángulos se muestran en grados; `--visual-filter` aplica límites explícitos de
+orientación, tamaño y encuadre. Q permanece como evidencia cruda sin umbral de aceptación. Hacer click en el gráfico mueve el video a ese instante. El archivo depende de que
 el video original continúe en la misma ruta. El panel **Decisiones por segmento** distingue
 decisiones `INSTANTÁNEO` y `FINAL`, muestra `CONSERVAR`, `DESCARTAR` o `REVISAR`, resume las razones
 y métricas, y permite saltar al comienzo de cada región con un click. La banda inferior de la
@@ -287,6 +288,83 @@ TALKINGFACEKIT_DEEPTALK_TEST_VIDEO=/ruta/al/video.mp4 \
   uv run --extra active-speaker-deeptalk pytest tests/test_deeptalk_e2e.py
 ```
 
+### Filtrar pose útil, tamaño y encuadre
+
+`--visual-filter` agrega una etapa experimental sin nuevos modelos ni dependencias. Reutiliza
+pose y boxes de InspireFace sobre el video original. Sin el flag, la selección anterior se
+conserva. Si se habilita SyncNet, el filtro visual trabaja después: nunca recupera intervalos
+rechazados o inciertos por sincronía y sólo recorta dentro de candidatos que ya la pasaron.
+
+```bash
+uv run --extra active-speaker-deeptalk --extra synchronization-syncnet \
+  python -m talkingfacekit analyze-video data/eval/videos/Piers_Sellers_JSC_2016_interview.mp4 \
+  --start-seconds 0 --end-seconds 90 --syncnet-model models/syncnet_v2.model \
+  --visual-filter --output reports/visual/piers.json --report reports/visual/piers.html
+```
+
+Los límites iniciales son experimentales y configurables; no están calibrados como garantías:
+
+| Flag | Default | Qué mide |
+| --- | ---: | --- |
+| `--visual-maximum-yaw` | 70° | Giro lateral absoluto; admite vistas de tres cuartos |
+| `--visual-maximum-pitch` | 40° | Inclinación vertical absoluta |
+| `--visual-maximum-roll` | 45° | Inclinación hacia el hombro, independiente de frontalidad |
+| `--visual-minimum-face-pixels` | 64 px | Lado menor del box en píxeles fuente |
+| `--visual-minimum-face-width-fraction` | 0.04 | Ancho visible del rostro / ancho del video |
+| `--visual-maximum-clipped-fraction` | 0.05 | Fracción del área del box fuera del cuadro |
+| `--visual-maximum-bad-gap-seconds` | 0.20 s | Interrupción breve tolerable entre observaciones válidas |
+| `--visual-minimum-duration-seconds` | 2 s | Duración mínima después de recortar |
+| `--visual-minimum-observed-fraction` | 0.90 | Fracción de tiempo con box y pose medibles |
+| `--visual-minimum-passing-fraction` | 0.90 | Fracción de tiempo dentro de todos los límites |
+
+El criterio habitual admite vistas laterales moderadas: no exige cabeza frontal ni contacto
+visual. Los ángulos se comparan por valor absoluto y los límites son inclusivos. El tamaño se mide antes
+de redimensionar cualquier recorte de modelo. El encuadre usa la intersección del box con la
+imagen; no representa visibilidad real de labios u ojos. `--visual-maximum-bad-gap-seconds 0`
+desactiva los puentes. Los umbrales personalizados requieren `--visual-filter`.
+
+Cada observación cubre como máximo un período de la grilla de 25 Hz, hasta la siguiente
+observación si llega antes. La ausencia de evidencia se registra como `uncertain`, no se interpola
+pose ni se considera frontal. Sólo se toleran interrupciones acotadas con evidencia válida a ambos
+lados y respetando ambas fracciones mínimas. Los giros sostenidos dividen el candidato; los
+fragmentos cortos se descartan. No se unen intervalos a través de cortes de plano o identidades.
+Los fallos originales y los puentes tolerados quedan registrados por separado.
+
+El JSON conserva `candidate_runs`, `synchronization`, `visual_filter` y `selected_intervals`.
+El HTML muestra los límites, las métricas, las razones y los segundos seleccionados antes/después.
+La banda superior adicional y las decisiones finales reflejan el filtro visual; el overlay Y/P/R
+y las decisiones ASD originales siguen disponibles. **No mide mirada ocular, nitidez ni oclusión;
+Q sigue siendo diagnóstico.**
+
+Para evaluar sin cambiar las anotaciones:
+
+```bash
+uv run --extra active-speaker-deeptalk --extra synchronization-syncnet \
+  python -m talkingfacekit evaluate-benchmark benchmark/manifest.json \
+  --videos-dir data/eval/videos --syncnet-model models/syncnet_v2.model --visual-filter \
+  --output reports/visual/benchmark-run01.json
+uv run python -m talkingfacekit render-benchmark reports/visual/benchmark-run01.json \
+  --videos-dir data/eval/videos --output reports/visual/comparison.html
+```
+
+La misma inferencia produce `predicted_before_visual_filter`, `metrics_before_visual_filter`
+y `overall_before_visual_filter`, además de las predicciones y métricas posteriores. El comparador
+recalcula las métricas desde los intervalos guardados, muestra una banda **Antes visual**, los
+límites y motivos de cada decisión. Los archivos antiguos siguen siendo legibles. Los valores
+porcentuales evalúan utilidad temporal contra estas anotaciones, no exactitud angular o mirada.
+La [evaluación y revisión del criterio](docs/research/visual_selection.md) conserva las corridas:
+los límites estrictos iniciales (yaw 25°, pitch 20°, rostro 96px) bajaban el recall a 46.65%.
+El criterio actual, que admite vistas de tres cuartos, recupera el recall de 95.09% de la selección
+anterior y da 92.43% de precisión en los mismos cinco videos. Es una comprobación sobre material
+ya inspeccionado, no una validación independiente. La configuración estricta sigue disponible
+con `--visual-maximum-yaw 25 --visual-maximum-pitch 20 --visual-minimum-face-pixels 96
+--visual-minimum-face-width-fraction 0.08`.
+
+Desde Python, `talkingfacekit.visual.assess_visual_suitability` consume `VisualRegion` y
+`VisualObservation` independientes del backend, junto con dimensiones fuente, frecuencia de las
+observaciones y `VisualPolicy`. Devuelve `VisualResult` sin I/O ni inferencia y sin modificar las
+observaciones del backend. Puede aplicarse a evidencia guardada sin volver a cargar modelos.
+
 ### Verificar sincronización de candidatos con SyncNet
 
 La etapa opcional recibe los `candidate_runs` de DeepTalk. Reutiliza sus IDs y boxes: no vuelve a
@@ -325,7 +403,8 @@ Las ventanas particionan completamente cada candidato, con un máximo de 5 segun
 confiable en cualquier ventana rechaza todo ese candidato. Sólo pasa sincronía cuando todas sus
 ventanas son verificables y están dentro de la tolerancia; los casos cortos, discontinuos, débiles
 o incompletos quedan inciertos y fuera de la selección automática. Pasar sincronía aún requiere
-los filtros pendientes de orientación/calidad; no es una aceptación final para entrenamiento.
+el filtro visual opcional descrito abajo. Ninguna de estas etapas certifica mirada ocular,
+nitidez u oclusiones; no es una aceptación final para entrenamiento.
 
 La salida conserva las decisiones estructurales y añade mediciones y decisiones de sincronía,
 hash del modelo, política y tiempos. El HTML muestra la evidencia por ventana; no corrige ni

@@ -13,6 +13,7 @@ from tempfile import NamedTemporaryFile
 from talkingfacekit.integrations.deeptalk import DeepTalkAnalysisResult
 from talkingfacekit.sequence import TalkingFaceSequence
 from talkingfacekit.synchronization import SynchronizationResult
+from talkingfacekit.visual import VisualResult
 
 _REPORT_TEMPLATE = r"""<!doctype html>
 <html lang="es">
@@ -213,7 +214,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
       </div>
       <h2>Raw scores</h2>
       <div id="score-list" aria-live="polite"></div>
-      <p class="note">“Top candidate” significa únicamente que ese rostro tiene el raw score más alto durante una ventana con voz. Los candidate runs ya cumplen duración, cobertura y estabilidad visual, pero todavía no son clips finales. Y/P/R y Q siguen siendo evidencia cruda sin thresholds de aceptación.</p>
+      <p class="note">“Top candidate” significa únicamente que ese rostro tiene el raw score más alto durante una ventana con voz. Y/P/R son yaw, pitch y roll de la cabeza en grados. El filtro visual, cuando está habilitado, evalúa orientación, tamaño y encuadre. Q sigue siendo diagnóstico. No se mide mirada ocular, nitidez ni oclusión.</p>
       <p class="issues" id="issues"></p>
     </aside>
     <section class="panel timeline" aria-label="Timeline de scores y voz">
@@ -222,7 +223,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
         <div class="legend" id="legend"></div>
       </div>
       <canvas id="timeline" role="img" aria-label="Raw scores por rostro, intervalos de voz, cortes de plano, reparaciones de audio y posición actual"></canvas>
-      <div class="timeline-help">Hacé click en la timeline para saltar a ese instante. El fondo verde marca voz; las líneas verticales celestes marcan cortes de plano y las violetas, reparaciones del audio. La banda inferior conserva la decisión preliminar instantánea; la banda separada justo encima muestra el candidate run final después de aplicar continuidad temporal.</div>
+      <div class="timeline-help">Hacé click para saltar a ese instante. Fondo verde: voz; líneas celestes: cortes; violetas: reparaciones de audio. Bandas de abajo hacia arriba: decisión instantánea, continuidad y sincronía, y selección con filtro visual cuando está habilitado.</div>
     </section>
     <section class="panel decision-summary" aria-label="Resumen de decisiones por segmento">
       <div class="decision-summary-head">
@@ -236,6 +237,12 @@ _REPORT_TEMPLATE = r"""<!doctype html>
       <h2>Sincronización de voz y labios</h2>
       <p class="note" id="sync-note"></p>
       <div class="decision-list" id="sync-windows"></div>
+    </section>
+    <section class="panel decision-summary" id="visual-panel" hidden>
+      <h2>Orientación, tamaño y encuadre</h2>
+      <p class="note" id="visual-note"></p>
+      <p class="note" id="visual-current"></p>
+      <div class="decision-list" id="visual-decisions"></div>
     </section>
   </main>
   <script>
@@ -309,7 +316,20 @@ _REPORT_TEMPLATE = r"""<!doctype html>
         sync_face_track_gap: "faltan detecciones de la cara",
         sync_face_outside_frame: "cara fuera del cuadro",
         sync_video_missing: "faltan frames de video",
-        sync_video_timestamp_gap: "faltan frames cercanos al tiempo esperado"
+        sync_video_timestamp_gap: "faltan frames cercanos al tiempo esperado",
+        visual_policy_passed: "pasó orientación, tamaño y encuadre",
+        head_yaw_exceeded: "giro lateral de cabeza fuera de tolerancia",
+        head_pitch_exceeded: "inclinación vertical de cabeza fuera de tolerancia",
+        head_roll_exceeded: "inclinación hacia el hombro fuera de tolerancia",
+        face_too_small_pixels: "rostro con resolución insuficiente",
+        face_too_small_relative: "rostro demasiado pequeño en el encuadre",
+        face_clipped: "rostro recortado por el borde",
+        visual_pose_unavailable: "pose no medible",
+        visual_face_evidence_missing: "faltan observaciones visuales",
+        visual_evidence_insufficient: "cobertura de evidencia visual insuficiente",
+        visual_passing_fraction_insufficient: "demasiado tiempo fuera de tolerancia visual",
+        visual_segment_too_short: "tramo visual restante demasiado corto",
+        brief_visual_gap_tolerated: "interrupción visual breve tolerada"
       };
       return reasons.map(reason => labels[reason] || reason).join(" · ");
     }
@@ -353,6 +373,8 @@ _REPORT_TEMPLATE = r"""<!doctype html>
       const preliminarySegment = containingInterval(REPORT.preliminarySegments, sourceTime);
       const candidateRun = containingInterval(REPORT.candidateRuns, sourceTime);
       const syncDecision = (REPORT.synchronization?.decisions || []).find(item => item.source_start_seconds <= sourceTime && sourceTime < item.source_end_seconds);
+      const visualDecision = (REPORT.visualFilter?.decisions || []).find(item => item.source_start_seconds <= sourceTime && sourceTime < item.source_end_seconds);
+      const visualWindow = (REPORT.visualFilter?.windows || []).find(item => item.source_start_seconds <= sourceTime && sourceTime < item.source_end_seconds);
       const scores = scoreWindow ? scoreWindow[2] : [];
       const speechActive = speech !== null && speech[2] !== "rejected";
       let candidate = null;
@@ -360,7 +382,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
         candidate = scores.reduce((best, item) => item[1] > best[1] ? item : best);
       }
       return {
-        scoreWindow, speech, preliminarySegment, candidateRun, syncDecision, scores, speechActive, candidate
+        scoreWindow, speech, preliminarySegment, candidateRun, syncDecision, visualDecision, visualWindow, scores, speechActive, candidate
       };
     }
 
@@ -411,7 +433,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
     function updateSide(sourceTime, evidence) {
       const signature = JSON.stringify([
         Math.floor(sourceTime * 10), evidence.speech, evidence.preliminarySegment,
-        evidence.candidateRun, evidence.syncDecision, evidence.scores
+        evidence.candidateRun, evidence.syncDecision, evidence.visualDecision, evidence.visualWindow, evidence.scores
       ]);
       if (signature === lastSideSignature) return;
       lastSideSignature = signature;
@@ -454,6 +476,13 @@ _REPORT_TEMPLATE = r"""<!doctype html>
             candidateTitle.textContent = `${sync.status === "candidate" ? "CANDIDATO CON SINCRONÍA VERIFICADA" : sync.status === "rejected" ? "DESCARTAR POR DESFASE" : "REVISAR SINCRONÍA"} · Face ${run[3]}`;
             candidateDetail.textContent += ` · ${formatReasons(sync.reason_codes)}${sync.estimated_offset_seconds === null ? "" : ` · offset ${(sync.estimated_offset_seconds * 1000).toFixed(0)} ms (positivo = audio atrasado)`}`;
           }
+          if (evidence.visualDecision?.metrics) {
+            const visual = evidence.visualDecision;
+            segmentDecision.classList.remove("keep", "rejected", "uncertain");
+            segmentDecision.classList.add(visual.status === "candidate" ? "keep" : visual.status === "rejected" ? "rejected" : "uncertain");
+            candidateTitle.textContent = `${visual.status === "candidate" ? "CONSERVAR CON FILTRO VISUAL" : visual.status === "rejected" ? "DESCARTAR POR FILTRO VISUAL" : "REVISAR EVIDENCIA VISUAL"} · Face ${run[3]}`;
+            candidateDetail.textContent += ` · ${formatReasons(visual.reason_codes)} · ${visualMetricsText(visual.metrics)}`;
+          }
         } else if (evidence.preliminarySegment) {
           const segment = evidence.preliminarySegment;
           const status = segment[2];
@@ -469,6 +498,13 @@ _REPORT_TEMPLATE = r"""<!doctype html>
           candidateTitle.textContent = "Sin evaluación preliminar";
           candidateDetail.textContent = "No hay una ventana de score disponible en este instante.";
         }
+      }
+
+      if (REPORT.visualFilter) {
+        const frame = nearestFaceFrame(sourceTime);
+        const face = frame?.[1].find(item => item[0] === evidence.visualDecision?.face_id);
+        document.getElementById("visual-current").textContent =
+          `${formatTime(sourceTime)} · ${evidence.visualWindow ? formatReasons(evidence.visualWindow.reason_codes) : "Sin medición visual en este instante"}${face ? ` · Y/P/R ${face[5].toFixed(1)}/${face[6].toFixed(1)}/${face[7].toFixed(1)}° · rostro ${Math.min(face[3], face[4]).toFixed(0)} px · ancho ${(100 * Math.max(0, Math.min(REPORT.video.width, face[1] + face[3]) - Math.max(0, face[1])) / REPORT.video.width).toFixed(1)}%` : ""}`;
       }
 
       scoreList.replaceChildren();
@@ -553,6 +589,10 @@ _REPORT_TEMPLATE = r"""<!doctype html>
         timelineContext.fillStyle = status === "candidate" ? "#42c68a" : status === "uncertain" ? "#9aa7b8" : "#f06a6a";
         timelineContext.fillRect(x(run[0]), top + plotHeight - 16, x(run[1]) - x(run[0]), 7);
       }
+      for (const item of REPORT.visualFilter?.decisions || []) {
+        timelineContext.fillStyle = item.status === "candidate" ? "#42c68a" : item.status === "uncertain" ? "#9aa7b8" : "#f06a6a";
+        timelineContext.fillRect(x(item.source_start_seconds), top + plotHeight - 25, x(item.source_end_seconds) - x(item.source_start_seconds), 7);
+      }
       timelineContext.strokeStyle = "#353c46";
       timelineContext.lineWidth = 1;
       timelineContext.fillStyle = "#a7b0bc";
@@ -619,7 +659,14 @@ _REPORT_TEMPLATE = r"""<!doctype html>
     }
 
     function finalDecisions() {
-      const decisions = REPORT.candidateRuns.map(run => {
+      const decisions = REPORT.visualFilter ? REPORT.visualFilter.decisions.map(item => ({
+        start: item.source_start_seconds, end: item.source_end_seconds,
+        decision: item.status === "candidate" ? "keep" : item.status === "uncertain" ? "review" : "discard",
+        faceId: item.face_id, reasons: item.reason_codes,
+        duration: item.source_end_seconds - item.source_start_seconds,
+        coverage: null, maximumGap: null, observedCount: null, expectedCount: null,
+        bridgedGaps: item.tolerated_gap_intervals, kind: "run", visualMetrics: item.metrics
+      })) : REPORT.candidateRuns.map(run => {
         const sync = (REPORT.synchronization?.decisions || []).find(item => Math.abs(item.source_start_seconds - run[0]) < 1e-6 && item.face_id === run[3]);
         const status = sync?.status || run[2];
         return ({
@@ -711,7 +758,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
         const metrics = decision.coverage === null
           ? ""
           : ` · cobertura ${(decision.coverage * 100).toFixed(1)}% (${decision.observedCount}/${decision.expectedCount}) · hueco máx. ${decision.maximumGap.toFixed(3)}s${decision.bridgedGaps.length ? ` · puentes ${decision.bridgedGaps.map(gap => `${formatTime(gap[0])}–${formatTime(gap[1])}`).join(", ")}` : ""}`;
-        evidence.textContent = `${formatReasons(decision.reasons)}${metrics}`;
+        evidence.textContent = `${formatReasons(decision.reasons)}${metrics}${decision.visualMetrics ? ` · ${visualMetricsText(decision.visualMetrics)}` : ""}`;
         row.append(primary, interval, evidence);
         row.addEventListener("click", () => {
           video.currentTime = decision.start;
@@ -770,7 +817,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
       const sync = REPORT.synchronization;
       if (!sync) return;
       document.getElementById("sync-panel").hidden = false;
-      document.getElementById("sync-note").textContent = `${sync.backend} · ${sync.elapsed_seconds.toFixed(2)} s de verificación · tolerancia ±${(sync.policy.tolerance_seconds * 1000).toFixed(0)} ms · confianza mínima ${sync.policy.minimum_confidence}. Offset positivo: audio atrasado. Los casos inciertos quedan fuera de la selección automática. Pasar esta etapa todavía requiere orientación y calidad visual.`;
+      document.getElementById("sync-note").textContent = `${sync.backend} · ${sync.elapsed_seconds.toFixed(2)} s de verificación · tolerancia ±${(sync.policy.tolerance_seconds * 1000).toFixed(0)} ms · confianza mínima ${sync.policy.minimum_confidence}. Offset positivo: audio atrasado. Los casos inciertos quedan fuera de la selección automática. La etapa visual se informa por separado; mirada ocular y calidad de imagen no se certifican.`;
       const list = document.getElementById("sync-windows");
       for (const item of sync.windows) {
         const row = document.createElement("button");
@@ -790,6 +837,39 @@ _REPORT_TEMPLATE = r"""<!doctype html>
         row.append(primary, interval, evidence);
         row.addEventListener("click", () => {video.currentTime = item.source_start_seconds; render();});
         list.append(row);
+      }
+    }
+
+    function visualMetricsText(metrics) {
+      const pose = metrics.maximum_absolute_yaw_pitch_roll_degrees;
+      return `tiempo dentro de tolerancia ${(metrics.passing_fraction * 100).toFixed(1)}% · medido ${(metrics.observed_fraction * 100).toFixed(1)}%${pose ? ` · |Y/P/R| máx. ${pose.map(value => value.toFixed(1)).join("/")}°` : ""}${metrics.minimum_face_size_pixels === null ? "" : ` · tamaño mín. ${metrics.minimum_face_size_pixels.toFixed(0)} px · ancho mín. ${(metrics.minimum_face_width_fraction * 100).toFixed(1)}% · recorte máx. ${(metrics.maximum_clipped_fraction * 100).toFixed(1)}%`}`;
+    }
+
+    function buildVisualSummary() {
+      const visual = REPORT.visualFilter;
+      if (!visual) return;
+      document.getElementById("visual-panel").hidden = false;
+      const p = visual.policy;
+      const before = REPORT.synchronization ? REPORT.synchronization.decisions : REPORT.candidateRuns.map(run => ({status: run[2], source_start_seconds: run[0], source_end_seconds: run[1]}));
+      const selectedSeconds = items => items.filter(item => item.status === "candidate").reduce((sum, item) => sum + item.source_end_seconds - item.source_start_seconds, 0);
+      document.getElementById("visual-note").textContent = `Filtro experimental de pose útil; admite vistas de tres cuartos. |Yaw| ≤ ${p.maximum_absolute_yaw_degrees}°, |Pitch| ≤ ${p.maximum_absolute_pitch_degrees}°, |Roll| ≤ ${p.maximum_absolute_roll_degrees}°. Rostro ≥ ${p.minimum_face_size_pixels} px; ancho visible ≥ ${(p.minimum_face_width_fraction * 100).toFixed(1)}%; recorte ≤ ${(p.maximum_clipped_fraction * 100).toFixed(1)}%. Interrupción breve ≤ ${p.maximum_bad_gap_seconds}s; duración mínima ${p.minimum_duration_seconds}s; tiempo medido ≥ ${(p.minimum_observed_fraction * 100).toFixed(0)}%; dentro de tolerancia ≥ ${(p.minimum_passing_fraction * 100).toFixed(0)}%. Antes: ${selectedSeconds(before).toFixed(2)}s; después: ${selectedSeconds(visual.decisions).toFixed(2)}s. No mide mirada ocular, nitidez ni oclusión. Q no se filtra.`;
+      const list = document.getElementById("visual-decisions");
+      for (const item of visual.decisions.filter(item => item.metrics)) {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = `decision-row ${item.status === "candidate" ? "keep" : item.status === "rejected" ? "discard" : "review"}`;
+        const primary = document.createElement("span");
+        primary.className = "decision-primary";
+        primary.textContent = item.status === "candidate" ? "CONSERVAR" : item.status === "rejected" ? "DESCARTAR" : "REVISAR";
+        const interval = document.createElement("span");
+        interval.className = "decision-interval";
+        interval.textContent = `${formatTime(item.source_start_seconds)} – ${formatTime(item.source_end_seconds)}`;
+        const detail = document.createElement("span");
+        detail.className = "decision-evidence";
+        detail.textContent = `${formatReasons(item.reason_codes)} · ${visualMetricsText(item.metrics)}${item.tolerated_gap_intervals.length ? ` · interrupciones toleradas: ${item.tolerated_gap_intervals.map(gap => `${formatTime(gap[0])}–${formatTime(gap[1])}`).join(", ")}` : ""}`;
+        row.append(primary, interval, detail);
+        row.addEventListener("click", () => {video.currentTime = item.source_start_seconds; render();});
+        list.appendChild(row);
       }
     }
 
@@ -817,6 +897,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
     buildLegend();
     buildDecisionSummary();
     buildSynchronizationSummary();
+    buildVisualSummary();
     render();
   </script>
 </body>
@@ -831,6 +912,7 @@ def render_active_speaker_report(
     *,
     overwrite: bool = False,
     synchronization: SynchronizationResult | None = None,
+    visual_filter: VisualResult | None = None,
 ) -> Path:
     """Render a browser-based diagnostic report beside an unchanged source video.
 
@@ -839,7 +921,8 @@ def render_active_speaker_report(
     face boxes, raw head-pose and quality evidence, raw-score windows, VAD state, audio-repair
     markers, scene-cut boundaries, and the chart cursor. The largest raw score during a
     non-rejected speech interval is labelled only as a ``top candidate``. Pose and quality remain
-    diagnostic backend values without acceptance thresholds.
+    diagnostic backend values unless an explicit visual filter is supplied. Ocular gaze and
+    image quality remain unmeasured by the geometry filter.
 
     Parameters
     ----------
@@ -854,6 +937,9 @@ def render_active_speaker_report(
     synchronization
         Optional candidate verification. Decisions override structural selection in the UI;
         original raw evidence remains visible. Positive offsets mean late audio.
+    visual_filter
+        Optional geometry selection after structural/sync decisions. Raw evidence, thresholds,
+        tolerated gaps and visual trimming remain inspectable alongside upstream decisions.
 
     Returns
     -------
@@ -882,6 +968,7 @@ def render_active_speaker_report(
     path = _validate_output_path(output_path, overwrite=overwrite)
     payload = _build_report_payload(sequence, result, source_path=source_path)
     payload["synchronization"] = None if synchronization is None else asdict(synchronization)
+    payload["visualFilter"] = None if visual_filter is None else asdict(visual_filter)
     report_title = f"TalkingFaceKit active speaker report · {source_path.name}"
     report_html = _REPORT_TEMPLATE.replace("__REPORT_TITLE__", html.escape(report_title)).replace(
         "__REPORT_DATA__",

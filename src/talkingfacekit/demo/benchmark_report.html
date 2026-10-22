@@ -99,6 +99,7 @@
           <output id="time" class="time"></output></div>
         <p class="muted"><small>Click en una banda para ir a ese instante. Cada bloque conserva sus límites; los tiempos son del archivo original.</small></p>
         <details><summary>Métricas de este caso</summary><div id="case-metrics" class="metrics"></div>
+          <p class="muted" id="visual-comparison"></p>
           <p class="muted"><small>Precisión y recall por tiempo. «—» significa que el denominador es cero. El tiempo sin evaluar queda excluido.</small></p></details>
       </section>
       <aside>
@@ -129,12 +130,12 @@
       <p class="muted">Elegí un caso para inspeccionarlo. Las anotaciones humanas permanecen fijas.</p>
       <div class="table-wrap"><table><thead><tr><th>Video / ventana original</th><th>Precisión</th><th>Recall</th>
         <th>Conservado de más</th><th>Útil perdido</th></tr></thead><tbody id="case-table"></tbody></table></div>
-      <details><summary>Métricas globales · suma de segundos de los casos</summary><div id="overall-metrics" class="metrics"></div></details>
+      <details><summary>Métricas globales · suma de segundos de los casos</summary><div id="overall-metrics" class="metrics"></div><p id="overall-visual-comparison" class="muted"></p></details>
     </section>
   </main>
   <footer><p>La comparación mide selección temporal. Dos segmentos contiguos pueden coincidir por tiempo y tener fronteras distintas.
     Los motivos muestran reglas registradas; no demuestran por sí solos la causa de un error del modelo.
-    «Conservar» significa candidato en las etapas ejecutadas, pendiente de criterios finales de orientación y calidad.
+    «Conservar» significa candidato en las etapas ejecutadas. El filtro visual opcional mide orientación, tamaño y encuadre; no certifica mirada ocular, nitidez u oclusión.
     Las corridas con SyncNet excluyen desfases confirmados y casos de sincronía incierta; las corridas anteriores sólo evalúan la selección estructural.</p>
     <p id="provenance"></p></footer>
   <script>
@@ -155,7 +156,14 @@
       audio_video_offset:"Desfase audiovisual confirmado",synchronization_passed:"Pasó la verificación de sincronía",
       synchronization_not_verified:"Sincronía no verificada: excluido de selección automática",
       inconsistent_audio_video_offsets:"El desfase cambia entre ventanas",sync_low_confidence:"Confianza insuficiente",
-      sync_search_boundary:"Óptimo en el borde del rango: desfase no confirmado",sync_window_too_short:"Ventana demasiado corta"};
+      sync_search_boundary:"Óptimo en el borde del rango: desfase no confirmado",sync_window_too_short:"Ventana demasiado corta",
+      visual_policy_passed:"Pasó orientación, tamaño y encuadre",head_yaw_exceeded:"Giro lateral fuera de tolerancia",
+      head_pitch_exceeded:"Inclinación vertical fuera de tolerancia",head_roll_exceeded:"Inclinación hacia el hombro fuera de tolerancia",
+      face_too_small_pixels:"Rostro con resolución insuficiente",face_too_small_relative:"Rostro pequeño en el encuadre",
+      face_clipped:"Rostro recortado por el borde",visual_pose_unavailable:"Pose no medible",
+      visual_face_evidence_missing:"Faltan observaciones visuales",visual_evidence_insufficient:"Cobertura visual insuficiente",
+      visual_passing_fraction_insufficient:"Demasiado tiempo fuera de tolerancia visual",
+      visual_segment_too_short:"Tramo visual restante demasiado corto",brief_visual_gap_tolerated:"Interrupción visual breve tolerada"};
     const policyLabels = {minimum_duration_seconds:"Duración mínima (s)",minimum_face_coverage:"Cobertura mínima (fracción)",
       maximum_face_gap_seconds:"Mayor hueco sin rostro permitido (s)",maximum_bridge_gap_seconds:"Interrupción breve máxima (s)"};
     let caseIndex = 0, activeDifference = -1, view = [0,1], playbackEnd = null, pendingSeek = null;
@@ -186,8 +194,15 @@
       if(video.getAttribute("src") !== current().video_url) { video.src = current().video_url; video.load(); }
       else if(video.readyState >= 1) seek(view[0]);
       showMetrics($("case-metrics"),current().metrics);
+      const before = current().metrics_before_visual_filter;
+      $("visual-comparison").textContent = current().visual_filter && before
+        ? `Antes del filtro visual: precisión ${ratio(before.precision)} · recall ${ratio(before.recall)} · conservado de más ${seconds(before.false_positive_seconds)} · útil perdido ${seconds(before.false_negative_seconds)}. Después: precisión ${ratio(current().metrics.precision)} · recall ${ratio(current().metrics.recall)}.` : "";
       $("policy").textContent = `DeepTalk ${current().backend_version || "sin versión registrada"}. ` +
         Object.entries(current().candidate_policy).map(([key,value]) => `${policyLabels[key] || key}: ${value}`).join(" · ");
+      if (current().visual_filter) {
+        const p = current().visual_filter.policy;
+        $("policy").textContent += ` · Filtro visual experimental: |Y/P/R| ≤ ${p.maximum_absolute_yaw_degrees}/${p.maximum_absolute_pitch_degrees}/${p.maximum_absolute_roll_degrees}°; rostro ≥ ${p.minimum_face_size_pixels}px; ancho ≥ ${(p.minimum_face_width_fraction*100).toFixed(1)}%; recorte ≤ ${(p.maximum_clipped_fraction*100).toFixed(1)}%; interrupción ≤ ${p.maximum_bad_gap_seconds}s; duración ≥ ${p.minimum_duration_seconds}s; cobertura ≥ ${(p.minimum_observed_fraction*100).toFixed(0)}%; dentro de tolerancia ≥ ${(p.minimum_passing_fraction*100).toFixed(0)}%. No mide mirada ocular.`;
+      }
       $("issues").replaceChildren(...current().issues.map(issue => node("li",issue)));
       if(!current().issues.length) $("issues").append(node("li","Sin avisos registrados."));
       document.querySelectorAll("#case-table tr").forEach((row,i) => row.classList.toggle("active",i === index));
@@ -230,12 +245,17 @@
     }
     function drawTimeline(t) {
       const svg = $("timeline"), left = 115, width = 870;
+      const hasVisual = !!current().visual_filter;
+      const libraryY = hasVisual ? 131 : 83, comparisonY = hasVisual ? 179 : 131;
+      const bottom = hasVisual ? 212 : 164;
+      svg.setAttribute("viewBox", `0 0 1000 ${hasVisual ? 248 : 200}`);
       const x = value => left + (value-view[0])/(view[1]-view[0])*width;
       svg.replaceChildren();
       const active = filteredDifferences()[activeDifference];
       if(active) svg.append(svgNode("rect",{x:x(Math.max(view[0],active.start)),y:20,
-        width:x(Math.min(view[1],active.end))-x(Math.max(view[0],active.start)),height:145,fill:"#ffffff",opacity:.045}));
-      for(const [label,y] of [["Humano",35],["Librería",83],["Comparación",131]]) {
+        width:x(Math.min(view[1],active.end))-x(Math.max(view[0],active.start)),height:bottom-19,fill:"#ffffff",opacity:.045}));
+      const bands = hasVisual ? [["Humano",35],["Antes visual",83],["Librería",libraryY],["Comparación",comparisonY]] : [["Humano",35],["Librería",libraryY],["Comparación",comparisonY]];
+      for(const [label,y] of bands) {
         svg.append(svgNode("text",{x:0,y:y+20,fill:"#acb8ca","font-size":15},label));
         svg.append(svgNode("rect",{x:left,y,width,height:29,rx:3,fill:"#101722"}));
       }
@@ -245,23 +265,27 @@
         rect.append(svgNode("title",{},title)); svg.append(rect);
       }
       for(const [a,b] of current().selected) block(a,b,35,"#c5b3ff",`Humano conserva ${clock(a)} – ${clock(b)}`);
-      for(const [a,b] of current().predicted) block(a,b,83,"#6fb6ff",`Librería conserva ${clock(a)} – ${clock(b)}`);
-      for(const r of current().regions) block(r.start,r.end,131,colors[r.status],`${labels[r.status]} · ${spanText(r)}`);
+      if(hasVisual) for(const [a,b] of current().predicted_before_visual_filter) block(a,b,83,"#f4ba43",`Antes del filtro visual ${clock(a)} – ${clock(b)}`);
+      for(const [a,b] of current().predicted) block(a,b,libraryY,"#6fb6ff",`Librería conserva ${clock(a)} – ${clock(b)}`);
+      for(const r of current().regions) block(r.start,r.end,comparisonY,colors[r.status],`${labels[r.status]} · ${spanText(r)}`);
       for(const [a,b] of current().ignore) {
-        block(a,b,35,"#596372","Sin evaluar"); block(a,b,83,"#596372","Sin evaluar");
+        block(a,b,35,"#596372","Sin evaluar"); block(a,b,libraryY,"#596372","Sin evaluar");
+        if(hasVisual) block(a,b,83,"#596372","Sin evaluar");
       }
-      for(const [intervals,y] of [[current().selected,35],[current().predicted,83]]) {
+      const selectionBands = [[current().selected,35],[current().predicted,libraryY]];
+      if(hasVisual) selectionBands.push([current().predicted_before_visual_filter,83]);
+      for(const [intervals,y] of selectionBands) {
         if(!intervals.length) svg.append(svgNode("text",{x:left+12,y:y+20,fill:"#acb8ca","font-size":13},
           "Sin intervalos conservados"));
       }
       for(const cut of current().diagnostics?.shot_boundaries || []) {
-        if(cut >= view[0] && cut <= view[1]) svg.append(svgNode("line",{x1:x(cut),x2:x(cut),y1:25,y2:163,stroke:"#50d8e3","stroke-width":2,"stroke-dasharray":"4 3"}));
+        if(cut >= view[0] && cut <= view[1]) svg.append(svgNode("line",{x1:x(cut),x2:x(cut),y1:25,y2:bottom-1,stroke:"#50d8e3","stroke-width":2,"stroke-dasharray":"4 3"}));
       }
       for(let i=0;i<=4;i++) {
         const value = view[0]+(view[1]-view[0])*i/4;
-        svg.append(svgNode("text",{x:x(value),y:188,fill:"#acb8ca","font-size":13,"text-anchor":i===0?"start":i===4?"end":"middle"},clock(value)));
+        svg.append(svgNode("text",{x:x(value),y:bottom+24,fill:"#acb8ca","font-size":13,"text-anchor":i===0?"start":i===4?"end":"middle"},clock(value)));
       }
-      if(t >= view[0] && t <= view[1]) svg.append(svgNode("line",{x1:x(t),x2:x(t),y1:22,y2:164,stroke:"#fff","stroke-width":2}));
+      if(t >= view[0] && t <= view[1]) svg.append(svgNode("line",{x1:x(t),x2:x(t),y1:22,y2:bottom,stroke:"#fff","stroke-width":2}));
       $("view-label").textContent = view[0] === current().window[0] && view[1] === current().window[1] ? "Ventana completa" : "Entorno de la diferencia · ±3 s";
     }
     function update(t) {
@@ -273,6 +297,18 @@
       $("status").style.borderColor = colors[r?.status] || "#6fb6ff";
       const evidence = $("evidence"); evidence.replaceChildren();
       function line(text) { evidence.append(node("li",text)); }
+      const visual = current().visual_filter;
+      if(visual) {
+        const decision = visual.decisions.find(item => item.source_start_seconds <= t && t < item.source_end_seconds);
+        const raw = visual.windows.find(item => item.source_start_seconds <= t && t < item.source_end_seconds);
+        if(decision?.metrics) {
+          line(`Filtro visual: ${decision.status === "candidate" ? "Conservar" : decision.status === "rejected" ? "Descartar" : "Revisar"}. ${decision.reason_codes.map(reason=>reasons[reason]||reason).join("; ")}.`);
+          const m = decision.metrics, pose = m.maximum_absolute_yaw_pitch_roll_degrees;
+          line(`Tiempo dentro de tolerancia ${(m.passing_fraction*100).toFixed(1)}%; medido ${(m.observed_fraction*100).toFixed(1)}%${pose ? `; |Y/P/R| máximos ${pose.map(value=>value.toFixed(1)).join("/")}°` : ""}${m.minimum_face_size_pixels === null ? "" : `; tamaño mínimo ${m.minimum_face_size_pixels.toFixed(0)}px; ancho mínimo ${(m.minimum_face_width_fraction*100).toFixed(1)}%; recorte máximo ${(m.maximum_clipped_fraction*100).toFixed(1)}%`}.`);
+        }
+        if(raw) line(`Evidencia visual instantánea: ${raw.reason_codes.map(reason=>reasons[reason]||reason).join("; ")}.`);
+        if(decision && contains(decision.tolerated_gap_intervals,t)) line("Interrupción visual breve tolerada entre observaciones que cumplen los límites.");
+      }
       const synchronization = current().synchronization;
       if(synchronization) {
         const decisions = synchronization.decisions.filter(item => item.source_start_seconds <= t && t < item.source_end_seconds);
@@ -353,6 +389,10 @@
       $("case-table").append(tr);
     }
     showMetrics($("overall-metrics"),REPORT.overall);
+    if(REPORT.cases.some(item=>item.visual_filter) && REPORT.overall_before_visual_filter) {
+      const m = REPORT.overall_before_visual_filter;
+      $("overall-visual-comparison").textContent = `Antes del filtro visual: precisión ${ratio(m.precision)} · recall ${ratio(m.recall)} · conservado de más ${seconds(m.false_positive_seconds)} · útil perdido ${seconds(m.false_negative_seconds)}. Métricas calculadas con las mismas anotaciones y la misma inferencia.`;
+    }
     $("provenance").textContent=`TalkingFaceKit ${REPORT.package_version || "sin versión"} · código ${REPORT.code_revision || "sin revisión"} · manifiesto ${REPORT.manifest_sha256 || "sin hash registrado"}`;
     chooseCase(0);
   </script>

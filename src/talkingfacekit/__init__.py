@@ -17,6 +17,15 @@ from talkingfacekit.synchronization import (
 from talkingfacekit.tracking import FaceLandmarkTrack, LandmarkTracker
 from talkingfacekit.tracking.mediapipe_mesh import build_mediapipe_face_mesh
 from talkingfacekit.video import DecodedVideoFrame, VideoSource
+from talkingfacekit.visual import (
+    VisualDecision,
+    VisualMetrics,
+    VisualObservation,
+    VisualPolicy,
+    VisualRegion,
+    VisualResult,
+    assess_visual_suitability,
+)
 
 __all__ = [
     "DecodedAudioChunk",
@@ -31,6 +40,13 @@ __all__ = [
     "TalkingFaceSequence",
     "VideoMetadata",
     "VideoSource",
+    "VisualDecision",
+    "VisualMetrics",
+    "VisualObservation",
+    "VisualPolicy",
+    "VisualRegion",
+    "VisualResult",
+    "assess_visual_suitability",
     "build_mediapipe_face_mesh",
     "load_landmark_track",
     "render_face_mesh_html",

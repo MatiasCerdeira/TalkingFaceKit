@@ -9,7 +9,9 @@ cada decisión. El benchmark permite comparar esa selección con el criterio hum
 Los candidatos actuales pasan reglas de habla, rostro único, score de hablante activo, cortes,
 duración y cobertura de detecciones. La etapa opcional SyncNet verifica voz y labios sobre esos
 candidatos: rechaza desfases confirmados y deja fuera de la selección automática los casos
-inciertos. La aceptación final para entrenamiento todavía requiere orientación y calidad visual.
+inciertos. `--visual-filter` agrega límites de pose útil, tamaño y encuadre usando la evidencia existente;
+recorta giros sostenidos y conserva interrupciones breves explícitas. El criterio actual admite vistas de tres cuartos; mirada ocular, nitidez y
+oclusiones siguen pendientes y los límites son experimentales.
 
 Antes de ejecutar, instalar el extra y descargar el modelo según la sección SyncNet del README.
 Para la comparación actual, mantener la corrida estructural anterior y una nueva con SyncNet.
@@ -25,7 +27,7 @@ ambas quedan fuera de la selección automática, pero sólo las primeras confirm
 | 2 minutos | Dos decisiones y sus motivos | Nuestro código combina esa evidencia. Un corte detectado divide segmentos; una pausa breve puede mantenerse dentro de un mismo plano. PySceneDetect aporta los cortes. |
 | 1 a 2 minutos | Resultados del benchmark por video y en total | Comparar las predicciones con anotaciones humanas: precisión, recall, segundos mal conservados y segundos útiles perdidos. |
 | 1 minuto | Una diferencia concreta respecto del humano | Mostrar el instante, explicar la causa observada y distinguirla de una hipótesis pendiente. |
-| 1 minuto | Alcance actual y siguiente paso | Orientación y calidad ya se muestran como datos; faltan sus reglas. SyncNet estima offsets en pasos de 40 ms con confianza y umbrales experimentales. |
+| 1 minuto | Filtro visual y alcance actual | Mostrar selección antes/después, límites Y/P/R, tamaño y motivos. No equivale a contacto visual. SyncNet estima offsets en pasos de 40 ms con confianza y umbrales experimentales. |
 
 Los tiempos son una guía de ensayo, no una obligación de mostrar todos los paneles.
 
@@ -57,7 +59,7 @@ uv run python -m talkingfacekit prepare-benchmark benchmark/annotations \
 
 uv run --extra active-speaker-deeptalk --extra synchronization-syncnet python -m talkingfacekit evaluate-benchmark \
   benchmark/manifest.json --videos-dir data/eval/videos \
-  --syncnet-model models/syncnet_v2.model --output reports/demo/benchmark-run01.json
+  --syncnet-model models/syncnet_v2.model --visual-filter --output reports/demo/benchmark-run01.json
 ```
 
 Reutilizar el manifiesto aprobado que viene con el repositorio. Si cambia el conjunto, revisar las
@@ -70,7 +72,7 @@ límites del siguiente ejemplo por los reales. Los valores del ejemplo no son an
 ```bash
 uv run --extra active-speaker-deeptalk --extra synchronization-syncnet python -m talkingfacekit analyze-video \
   data/eval/videos/video_01.mp4 --start-seconds 30 --end-seconds 90 \
-  --syncnet-model models/syncnet_v2.model --report reports/demo/video-01.html
+  --syncnet-model models/syncnet_v2.model --visual-filter --report reports/demo/video-01.html
 ```
 
 El benchmark actual guarda métricas e intervalos en JSON. El HTML diagnóstico se genera por separado
@@ -120,5 +122,6 @@ distinguir material mal conservado de material útil perdido y saltar a las dife
 intervalos `ignore` quedan excluidos de los errores. Incluye métricas por caso y globales.
 
 Incorporar las anotaciones del equipo requiere correr el benchmark y generar el reporte. Los filtros
-de orientación y calidad se pueden priorizar después de inspeccionar
-qué errores aparecen en esa primera línea base.
+de orientación, tamaño y encuadre ya se habilitan con `--visual-filter`. El comparador muestra
+**Antes visual** y las métricas antes/después desde la misma inferencia. Mantener las anotaciones
+fijas, informar pérdida de recall y revisar casos de borde sin ajustar los labels al filtro.

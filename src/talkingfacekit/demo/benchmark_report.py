@@ -18,6 +18,12 @@ from talkingfacekit.evaluation import (
     score_evaluation_case,
     verify_evaluation_videos,
 )
+from talkingfacekit.visual import (
+    VisualDecision,
+    VisualMetrics,
+    VisualPolicy,
+    VisualRegion,
+)
 
 
 def render_benchmark_report(
@@ -124,8 +130,43 @@ def _build_payload(document: dict[str, object], videos_dir: Path) -> dict[str, o
     paths = verify_evaluation_videos(cases, videos_dir)
     prepared: list[dict[str, object]] = []
     metrics = []
+    before_metrics = []
     for case, row in zip(cases, rows, strict=True):
         predicted = _intervals(row.get("predicted"), "predicted", case.window)
+        before = (
+            None
+            if row.get("predicted_before_visual_filter") is None
+            else _intervals(
+                row["predicted_before_visual_filter"], "predicted_before_visual_filter", case.window
+            )
+        )
+        before_scored = None if before is None else score_evaluation_case(case, before)
+        if before_scored is not None:
+            before_metrics.append(before_scored)
+        visual = _visual_filter(row.get("visual_filter"), case.window)
+        if visual is not None:
+            decisions = cast(list[dict[str, object]], visual["decisions"])
+            selected = tuple(
+                EvaluationInterval(
+                    cast(float, item["source_start_seconds"]),
+                    cast(float, item["source_end_seconds"]),
+                )
+                for item in decisions
+                if item["status"] == "candidate"
+            )
+            if selected != predicted or before is None:
+                raise ValueError(
+                    "visual decisions must match predictions and include pre-filter intervals"
+                )
+            if any(
+                not any(
+                    base.start_seconds <= item.start_seconds
+                    and item.end_seconds <= base.end_seconds
+                    for base in before
+                )
+                for item in predicted
+            ):
+                raise ValueError("visual filtering must not add selected time")
         scored = score_evaluation_case(case, predicted)
         metrics.append(scored)
         prepared.append(
@@ -136,6 +177,11 @@ def _build_payload(document: dict[str, object], videos_dir: Path) -> dict[str, o
                 "window": [case.window.start_seconds, case.window.end_seconds],
                 "selected": _pairs(case.selected),
                 "predicted": _pairs(predicted),
+                "predicted_before_visual_filter": None if before is None else _pairs(before),
+                "metrics_before_visual_filter": None
+                if before_scored is None
+                else asdict(before_scored),
+                "visual_filter": visual,
                 "ignore": _pairs(case.ignored),
                 "regions": _comparison_regions(case, predicted),
                 "metrics": asdict(scored),
@@ -149,6 +195,9 @@ def _build_payload(document: dict[str, object], videos_dir: Path) -> dict[str, o
     return {
         "cases": prepared,
         "overall": asdict(combine_evaluation_metrics(tuple(metrics))),
+        "overall_before_visual_filter": asdict(combine_evaluation_metrics(tuple(before_metrics)))
+        if len(before_metrics) == len(cases)
+        else None,
         "code_revision": _revision_text(document.get("code_revision")),
         "package_version": _optional_text(document.get("package_version")),
         "manifest_sha256": _optional_text(document.get("manifest_sha256")),
@@ -282,6 +331,102 @@ def _synchronization(value: object, window: EvaluationInterval) -> dict[str, obj
         raw.get("elapsed_seconds"), "synchronization elapsed_seconds"
     )
     return result
+
+
+def _visual_filter(value: object, window: EvaluationInterval) -> dict[str, object] | None:
+    if value is None:
+        return None
+    raw = _object(value, "visual_filter")
+    policy = VisualPolicy(
+        **{
+            key: _number(item, key)
+            for key, item in _object(raw.get("policy"), "visual policy").items()
+        }
+    )
+    normalized: dict[str, object] = {"policy": asdict(policy)}
+    for dimension in ("image_width", "image_height"):
+        val = raw.get(dimension)
+        if type(val) is not int or val <= 0:
+            raise ValueError("visual source dimensions must be positive integers")
+        normalized[dimension] = val
+    rate = _number(raw.get("video_sample_rate_hz"), "visual sample rate")
+    if rate <= 0:
+        raise ValueError("visual sample rate must be positive")
+    normalized["video_sample_rate_hz"] = rate
+    for key in ("windows", "decisions"):
+        entries = [_object(item, key) for item in _array(raw.get(key), key)]
+        bounds = _intervals(
+            [
+                [item.get("source_start_seconds"), item.get("source_end_seconds")]
+                for item in entries
+            ],
+            key,
+            window,
+        )
+        records: list[dict[str, object]] = []
+        for item, bound in zip(entries, bounds, strict=True):
+            face_id = _face_id(item.get("face_id"))
+            if face_id is None:
+                raise ValueError("visual regions require a face ID")
+            status = item.get("status")
+            if status not in {"candidate", "rejected", "uncertain"}:
+                raise ValueError("invalid visual status")
+            region = VisualRegion(
+                bound.start_seconds,
+                bound.end_seconds,
+                face_id,
+                status,
+                tuple(_strings(item.get("reason_codes"), "visual reasons")),
+            )
+            if key == "windows":
+                records.append(asdict(region))
+                continue
+            metrics = None
+            if item.get("metrics") is not None:
+                m = _object(item["metrics"], "visual metrics")
+                angles = m.get("maximum_absolute_yaw_pitch_roll_degrees")
+                pose = None
+                if angles is not None:
+                    angle_list = _array(angles, "visual angles")
+                    if len(angle_list) != 3:
+                        raise ValueError("visual angles require three axes")
+                    pose = (
+                        _number(angle_list[0], "yaw"),
+                        _number(angle_list[1], "pitch"),
+                        _number(angle_list[2], "roll"),
+                    )
+                metrics = VisualMetrics(
+                    _number(m.get("observed_fraction"), "observed fraction"),
+                    _number(m.get("passing_fraction"), "passing fraction"),
+                    pose,
+                    *[
+                        None if m.get(field) is None else _number(m[field], field)
+                        for field in (
+                            "minimum_face_size_pixels",
+                            "minimum_face_width_fraction",
+                            "maximum_clipped_fraction",
+                        )
+                    ],
+                )
+            gaps = tuple(
+                (gap.start_seconds, gap.end_seconds)
+                for gap in _intervals(item.get("tolerated_gap_intervals", []), "visual gaps", bound)
+            )
+            records.append(
+                asdict(
+                    VisualDecision(
+                        region.source_start_seconds,
+                        region.source_end_seconds,
+                        face_id,
+                        region.status,
+                        region.reason_codes,
+                        metrics,
+                        gaps,
+                    )
+                )
+            )
+        normalized[key] = records
+    return normalized
 
 
 def _policy(value: object) -> dict[str, float]:

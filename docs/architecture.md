@@ -67,10 +67,11 @@ provides an explicit gate:
    problem;
 3. compare TalkNet only if LR-ASD quality is inadequate.
 
-MediaPipe is not the active-speaker engine. It is the planned later source of head orientation and
-visual-suitability observations. Exact A/V offset is also not inferred from ASD scores; a separate
-SyncNet evaluation follows the active-speaker milestone. Folder discovery, collection results, and
-batch execution come after the one-video result model has been validated.
+MediaPipe is not the active-speaker engine. Its landmark and mesh workflows remain optional.
+The first visual-selection stage reuses InspireFace pose and bounding boxes already copied by
+DeepTalk. Exact A/V offset is not inferred from ASD scores; optional SyncNet verification measures
+it separately. Folder discovery, collection results, and batch execution come after the one-video
+result model has been validated.
 
 ## Dependency direction
 
@@ -110,7 +111,54 @@ Any confident out-of-tolerance window rejects its candidate; all windows must pa
 Incomplete or uncertain measurements are excluded from automatic selection. Conflicting reliable
 offsets suppress the global estimate, preserving each window for a future optional repair.
 Failures to load or execute a model fail explicitly rather than silently passing candidates.
-This stage never rewrites source media and does not certify pending pose/quality criteria.
+This stage never rewrites source media. Visual selection follows separately when enabled.
+
+### Optional visual selection
+
+`visual.py` contains framework-independent immutable observations, policy, raw classified regions,
+metrics and temporally filtered decisions. `assess_visual_suitability` performs no I/O or inference.
+The CLI copies existing DeepTalk pose and source-pixel boxes into those values and supplies source
+image dimensions and the observation grid rate. No new runtime dependency or model is required.
+`--visual-filter` enables the stage in both single-video analysis and benchmark evaluation; without
+it the previous structural/sync selection is preserved. Custom visual thresholds require the flag.
+
+The stage follows structural selection and, when enabled, SyncNet. Upstream rejected/uncertain
+regions remain unchanged and cannot be promoted. Successful sync measurements already cover the
+entire original candidate, including all retained visual subintervals; visual trimming does not
+claim to have run a new independent SyncNet measurement on each shorter fragment. Every upstream
+interval remains an independent shot/identity boundary, even if two adjacent intervals share an ID.
+
+Current experimental inclusive limits are absolute yaw 70°, pitch 40°, roll 45°, original box
+shorter side 64 pixels, visible width/image width 0.04, and box area outside the image at most
+0.05. These defaults admit three-quarter views and moderate side orientation; strict frontal
+alignment is not required for the clarified training use case. The initial 25°/20°/96px policy
+remains reproducible through explicit configuration; its recall loss and the fixed-label replay
+are recorded in `docs/research/visual_selection.md`. These are declared starting values, not calibrated limits. Pose signs remain backend evidence;
+absolute comparisons do not depend on left/right display conventions. Missing or implausible pose
+is uncertain. Resolution is measured in the original source, never after model-input upsampling.
+
+One measurement supports at most one grid period after its source timestamp, shortened by the next
+measurement and the input interval end. Missing time has explicit uncertain windows; no pose is
+interpolated or extrapolated across long gaps. A failed gap up to 0.20 seconds can be bridged only
+between passing evidence within one upstream interval. Leading/trailing failures are trimmed.
+Retained runs require two seconds, at least 90% time with valid box/pose evidence, and at least
+90% time passing all visual checks. This prevents repeated short failures from bypassing policy.
+Unmeasured and failed time remain excluded from those fractions even when tolerated. Sustained
+failures split candidates, and fragments below minimum duration are rejected.
+
+The result retains a complete partition of input decisions, raw instantaneous windows, measured
+extrema and time fractions, and exact tolerated-gap bounds. Raw DeepTalk and SyncNet results are
+not modified. JSON `selected_intervals` reflects every enabled stage. Benchmarks save pre-visual
+intervals and metrics from the same inference, alongside post-filter predictions. The comparator
+recomputes both sets of metrics from the fixed human annotations and saved intervals. Older
+version-1 reports without visual fields remain readable. Both HTML viewers expose applied limits,
+before/after selection, reasons and measurements. The comparator validates that saved visual
+decisions match predictions and cannot add time outside the pre-filter selection.
+
+Frontal head orientation is not ocular gaze. Box clipping is not an occlusion detector. The raw
+InspireFace quality score remains diagnostic: this stage certifies neither sharpness, lighting,
+eye contact nor visibility of individual facial parts. Passing results remain candidates for
+dataset review, not universally accepted training samples.
 
 Dependencies point toward the core:
 
@@ -254,7 +302,8 @@ validated integration-specific face observations, VAD intervals, score windows, 
 diagnostic issue codes on the original source timeline; no DeepTalk profiles, images, audio frames,
 or embeddings escape. A face observation preserves the bounding box, raw InspireFace head pose in
 degrees, and raw InspireFace quality score. Those values are diagnostic evidence rather than a
-camera-facing or visual-suitability decision. Open-ended sequences report unequal A/V coverage and
+camera-facing or visual-suitability decision in the adapter; the optional visual stage interprets
+pose and boxes separately. Open-ended sequences report unequal A/V coverage and
 do not retain face observations after audio coverage ends.
 
 The first TalkingFaceKit-owned policy is deliberately pre-calibration and remains represented by
