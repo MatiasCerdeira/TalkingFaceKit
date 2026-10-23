@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from talkingfacekit import TalkingFaceSequence, cli
+from talkingfacekit.integrations import deeptalk, syncnet
 from talkingfacekit.integrations.deeptalk import (
     DeepTalkAnalysisProvenance,
     DeepTalkAnalysisResult,
@@ -35,7 +36,7 @@ def test_sync_rejection_reaches_json_html_and_benchmark(
             ),
         ),
     )
-    monkeypatch.setattr(cli, "analyze_sequence", lambda sequence: raw)
+    monkeypatch.setattr(deeptalk, "analyze_sequence", lambda sequence, **kwargs: raw)
     policy = SynchronizationPolicy()
     window = SynchronizationWindow(
         2, 7, 1, "offset_detected", ("audio_video_offset",), 0.32, 8, 6, 1
@@ -57,7 +58,7 @@ def test_sync_rejection_reaches_json_html_and_benchmark(
             assert result is raw
             return verification
 
-    monkeypatch.setattr(cli, "SyncNetVerifier", FakeVerifier)
+    monkeypatch.setattr(syncnet, "SyncNetVerifier", FakeVerifier)
     output = tmp_path / "analysis.json"
     html = tmp_path / "analysis.html"
     assert (
@@ -153,10 +154,12 @@ def test_sync_rejection_reaches_json_html_and_benchmark(
 
 
 def test_custom_sync_thresholds_require_a_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fail(sequence: TalkingFaceSequence) -> DeepTalkAnalysisResult:
+    def fail(
+        sequence: TalkingFaceSequence, *, candidate_policy: object = None
+    ) -> DeepTalkAnalysisResult:
         pytest.fail("Invalid sync configuration must fail before analysis")
 
-    monkeypatch.setattr(cli, "analyze_sequence", fail)
+    monkeypatch.setattr(deeptalk, "analyze_sequence", fail)
     with pytest.raises(SystemExit) as error:
         cli.main(["analyze-video", "missing.webm", "--sync-tolerance-ms", "120"])
     assert error.value.code == 2

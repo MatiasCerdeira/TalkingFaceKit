@@ -17,8 +17,7 @@ video_005.mp4
 ```
 
 Más adelante, orientación a cámara, calidad visual y sincronización A/V convertirán los segmentos
-candidatos en segmentos aceptados según una política configurable. El análisis de un video debe
-probarse antes de crear un contenedor de carpetas o un sistema batch.
+candidatos en segmentos aceptados según una política configurable. El análisis individual ya alimenta una colección secuencial; un sistema concurrente sigue pendiente.
 
 ## Regla de avance
 
@@ -85,7 +84,7 @@ El repositorio ya ofrece:
 Estas capacidades se conservan. Landmarks, mesh y rendering pasan a ser herramientas visuales
 opcionales; ya no definen la promesa principal del producto.
 
-Limitaciones relevantes para la nueva dirección:
+Limitaciones históricas de la base inicial, resueltas progresivamente en las entregas siguientes:
 
 - no hay decode de audio como contrato público;
 - no hay tracking multi-rostro en el core;
@@ -291,21 +290,19 @@ AND sync passes or policy allows not_measurable
 La configuración define duración mínima, unión de gaps, tolerancias, comportamiento multi-rostro y
 offset aceptable. El reporte conserva observaciones y razones, no sólo el booleano final.
 
-## Entrega 8 — folder workflow, collection y batch
+## Entrega 8 — folder workflow y colección secuencial, implementados
 
-Sólo cuando el resultado de un video sea estable:
+Disponible desde Python:
 
-1. descubrir extensiones y paths de forma determinista;
-2. representar fuentes pendientes, no videos precargados;
-3. analizar cada archivo de manera independiente;
-4. persistir resultados por archivo atómicamente;
-5. continuar o detener ante error mediante política explícita;
-6. soportar resume por fingerprint, configuración, backend, modelo y schema;
-7. agregar concurrencia acotada después de medir CPU, memoria y thread/process safety;
-8. generar un reporte agregado de segmentos, rechazos, errores y runtime.
+1. `TalkingFaceSequence.analyze()` devuelve un `VideoAnalysisResult` con todas las etapas;
+2. `TalkingFaceCollection.from_folder(...)` descubre rutas determinísticamente sin abrir modelos;
+3. `collection.analyze(...)` procesa fuentes en secuencia, con errores y progreso tipados;
+4. cada éxito puede persistirse por archivo y el resumen se actualiza atómicamente tras cada outcome;
+5. la CLI usa el mismo analizador y conserva sus esquemas JSON y decisiones;
+6. los reportes HTML reutilizan evidencia en memoria sin repetir modelos.
 
-`TalkingFaceCollection.from_folder(...)` es una posible fachada, no un contrato comprometido. La
-colección no se implementa primero porque todavía no existe el resultado estable que contendría.
+Reanudación automática por fingerprint/configuración, carga tipada de JSON, caché, concurrencia y
+un scheduler siguen pendientes. No se modificaron los modelos ni las políticas de selección.
 
 ## Entrega 9 — normalización y export
 
@@ -333,15 +330,9 @@ No pertenece al camino crítico actual:
 Estas capacidades no se eliminan. Se evitan hasta que aporten valor a la validación del dataset o a
 un requerimiento posterior de la tesis.
 
-## Próximas cuatro unidades de trabajo
+## Próximo trabajo
 
-| Orden | Cambio | Demuestra |
-| ---: | --- | --- |
-| Completo | `DecodedAudioChunk` + `stream_audio_chunks` + tests | audio/video comparten tiempo fuente |
-| 1 | adapter DeepTalk experimental + tests con fake/integración marcada | se obtienen face/VAD/ASD sin contaminar el core |
-| 2 | JSON versionado + overlay de un video | el resultado ya es visible y explicable |
-| 3 | manifest y evaluación de seis casos | existe evidencia para conservar o cambiar backend |
-
-El próximo trabajo es decidir con el equipo cómo aislar/agregar la dependencia DeepTalk e implementar
-su adapter. No comenzar MediaPipe pose, SyncNet o `from_folder` hasta que el adapter y el reporte
-produzcan un flujo inspeccionable y la evaluación identifique sus errores reales.
+Ensayar el flujo Python de carpeta → análisis → selección y reportes para la demo. El ejemplo
+`examples/preprocess_folder.py` incluye progreso y errores. La mejora de velocidad requiere medir
+etapas antes de introducir concurrencia; está fuera de esta entrega. Exportar clips físicos y
+reanudación/caché se priorizarán según el uso real del cliente.

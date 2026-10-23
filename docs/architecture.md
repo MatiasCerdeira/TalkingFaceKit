@@ -27,8 +27,8 @@ features remain supported as optional visual capabilities rather than the primar
 
 ## Current delivery direction
 
-The first client-visible workflow analyzes one video before any collection or batch abstraction is
-built:
+The shared single-video workflow is available from Python and the CLI. Sequential collections
+reuse exactly this operation for each discovered source:
 
 ```text
 VideoSource + source interval
@@ -70,8 +70,80 @@ provides an explicit gate:
 MediaPipe is not the active-speaker engine. Its landmark and mesh workflows remain optional.
 The first visual-selection stage reuses InspireFace pose and bounding boxes already copied by
 DeepTalk. Exact A/V offset is not inferred from ASD scores; optional SyncNet verification measures
-it separately. Folder discovery, collection results, and batch execution come after the one-video
-result model has been validated.
+it separately. The folder workflow now adds lightweight source discovery, sequential execution,
+typed per-source outcomes and incremental persistence around the same single-video result.
+
+## Public analysis and sequential collections
+
+`active_speaker.py` owns immutable framework-independent observations, raw score windows,
+provenance, structural policies and pure candidate aggregation. These values were extracted from
+the experimental adapter without changing policy or inference behavior. Its previous `DeepTalk*`
+names remain aliases in `integrations.deeptalk` for compatibility. Neither the core nor downstream
+SyncNet/report consumers import an active-speaker integration to obtain evidence types.
+
+`analysis.py` defines `AnalysisConfig`, `AnalysisTimings`, `TalkingFaceSegment` and
+`VideoAnalysisResult`. Configuration construction performs no I/O; defaults preserve structural
+selection, while visual filtering and a specific SyncNet checkpoint are opt-in. A result retains
+the original `VideoSource` and requested bounds, all enabled stage results, timings and final
+selected segments. Its assessed segments are not a complete video partition: preliminary
+non-speech/no-face/ambiguous regions remain in the raw structural evidence. Selected segments
+identify their source and can become lightweight sequences without copying media or attached
+results. Model execution never mutates the input sequence.
+
+`processing.py` is the application boundary. `VideoAnalyzer` coordinates DeepTalk, synchronization,
+then visual selection with one configuration. `TalkingFaceSequence.analyze` delegates here.
+`analyze-video` and `evaluate-benchmark` use the same runner and do not own selection logic.
+The runner retains an optional private SyncNet verifier across sequential calls, preserving the
+existing benchmark behavior. DeepTalk tracking/VAD/model state is created per source. There is no
+thread/process executor, model-sharing redesign or generic pipeline system.
+
+`TalkingFaceCollection` contains immutable source paths rather than eagerly inspected sequences.
+`from_folder` delegates to `io.collection`, which discovers common case-insensitive video suffixes
+in deterministic relative-path order. Recursive discovery is explicit and does not follow directory
+symlinks. `from_videos` preserves caller order. Each source becomes a sequence when analysis starts,
+so a corrupt file is a typed per-source failure rather than a failure to load the collection.
+Empty collections load no models. Direct construction of collection/result/segment values performs
+no media I/O. Paths are made absolute at collection construction to preserve source identity if
+the working directory later changes.
+
+`CollectionAnalysisResult` retains ordered `VideoAnalysisOutcome` values and exposes successes,
+failures and selected segments across sources. An outcome has exactly one result or
+`AnalysisFailure`; a successful analysis with no selected time is never labelled a failure.
+`on_error="continue"` records inspection/model exceptions; `"raise"` records and reraises the
+original exception. Configuration, persistence, callback errors and KeyboardInterrupt propagate.
+Progress callbacks receive a `CollectionProgress` after each outcome is recorded and optionally
+saved. The application/collection layer does not print or configure process-wide logging;
+CLI/example code owns progress presentation. The experimental upstream backend can still emit SDK
+messages and configure logging during its own initialization.
+
+`io.analysis` owns atomic JSON persistence. The single-video JSON keeps its additive version-1
+schema, source SHA-256, code/model provenance, all stage evidence and selected source-time bounds.
+Source metadata and extra timings are additive fields. Optional collection output saves one full
+JSON per successful video and updates `collection.json` after every outcome, including failures.
+Preflight checks reject conflicting output names before inference; overwrite is explicit.
+Order-prefixed names distinguish identical stems. Writing failures propagate without destroying
+previously completed files. This is persistence of progress, not automatic cache lookup or resume.
+`VideoAnalysisResult.render_report` renders existing in-memory evidence without model execution,
+referencing unchanged local media. Physical clip export and a typed JSON reload API remain deferred.
+
+### Evaluation data and the benchmark view
+
+`EvaluationCaseResult` pairs a human `EvaluationCase` with the existing `VideoAnalysisResult`.
+Its predictions and metrics derive from those values using the existing scoring rules.
+`EvaluationResult` aggregates cases, metrics and `TalkingFaceSegment` references independently of
+presentation. `processing.evaluate_benchmark` owns sequential execution, source-hash verification
+and window clipping; the CLI delegates to it, retaining argument validation and console formatting.
+`io.evaluation` persists the existing version-1 benchmark schema, with additive selected segment
+references and scope metadata. `demo.render_benchmark_report` remains the same optional view over
+that JSON; neither saving nor rendering repeats inference.
+
+`collection.evaluate` restricts evaluation to human-labeled windows of collection sources.
+Unannotated sources and unmatched annotation filenames are recorded, excluded from metrics, and
+never interpreted as negative labels. Simple annotation inputs can explicitly map filenames with
+`video_aliases`; timestamps and labels remain unchanged. Approved hashed manifests cannot be
+remapped. Standalone evaluation without collection scope remains strict about missing media.
+Result persistence protects input media and annotation files/directories. No physical clip export,
+parallel execution, new model policy or new visualizer is introduced.
 
 ## Dependency direction
 
@@ -91,7 +163,7 @@ from millisecond quantization cannot create equal trimmed chunk starts at a wind
 
 Core synchronization dataclasses live in `synchronization.py`; optional loading, preprocessing,
 and inference live in `integrations/syncnet.py`. DeepTalk observations and candidate runs stay
-unchanged. CLI orchestration retains two separate results and selects from sync decisions when
+unchanged. Shared application orchestration retains two separate results and selects from sync decisions when
 enabled. JSON stores policy, per-window evidence, per-candidate decisions, model hash and elapsed
 time; both HTML reports reflect those decisions while showing the original ASD evidence.
 
@@ -117,7 +189,7 @@ This stage never rewrites source media. Visual selection follows separately when
 
 `visual.py` contains framework-independent immutable observations, policy, raw classified regions,
 metrics and temporally filtered decisions. `assess_visual_suitability` performs no I/O or inference.
-The CLI copies existing DeepTalk pose and source-pixel boxes into those values and supplies source
+The application runner copies existing pose and source-pixel boxes into those values and supplies source
 image dimensions and the observation grid rate. No new runtime dependency or model is required.
 `--visual-filter` enables the stage in both single-video analysis and benchmark evaluation; without
 it the previous structural/sync selection is preserved. Custom visual thresholds require the flag.
@@ -507,7 +579,7 @@ validation and complete serialization. No runtime dependencies are added for thi
 | Backend-independent animated mesh contract | Makes triangle geometry reusable by renderers, exporters, and future model-fitting backends.           |
 | MediaPipe 468-vertex surface conversion    | Reuses the official 852-triangle topology while keeping relative-depth limitations explicit.           |
 | Plotly as optional HTML renderer           | Provides a portable interactive demonstration without coupling core mesh data to a graphics framework. |
-| Single-video analysis before collection    | Validates the result model and client value before generalizing folder and batch orchestration.         |
+| Shared typed analysis and sequential collection | Python facades and CLI reuse one operation; per-source outcomes and atomic progress outputs preserve completed work. |
 | DeepTalk-ASD as experimental ASD backend   | Reuses a working face/VAD/LR-ASD pipeline while keeping its limitations outside the core.               |
 | Offline source-time DeepTalk scheduling    | Keeps A/V deterministic without presenting media timestamps as realtime wall-clock values.             |
 | DeepTalk and MediaPipe coexistence         | Allows active-speaker and dense-landmark stages in one environment while versions remain tested.        |

@@ -9,6 +9,7 @@ import pytest
 
 from talkingfacekit import cli
 from talkingfacekit.demo.benchmark_report import render_benchmark_report
+from talkingfacekit.integrations import deeptalk
 
 
 class SourceDocument(TypedDict):
@@ -80,7 +81,7 @@ def test_comparison_matches_scoring_and_ignored_time_without_inference(
     def forbid_analysis(*args: object, **kwargs: object) -> None:
         pytest.fail("Rendering a saved run must not analyze videos")
 
-    monkeypatch.setattr(cli, "analyze_sequence", forbid_analysis)
+    monkeypatch.setattr(deeptalk, "analyze_sequence", forbid_analysis)
     output = tmp_path / "comparison.html"
     assert (
         cli.main(

@@ -14,6 +14,7 @@ from talkingfacekit.evaluation import (
     score_evaluation_case,
     verify_evaluation_videos,
 )
+from talkingfacekit.integrations import deeptalk
 from talkingfacekit.integrations.deeptalk import (
     DeepTalkAnalysisProvenance,
     DeepTalkAnalysisResult,
@@ -223,7 +224,9 @@ def test_cli_verifies_then_scores_without_real_models(
     report_path = tmp_path / "report.json"
     analyzed: list[tuple[float, float | None]] = []
 
-    def fake_analyze(sequence: TalkingFaceSequence) -> DeepTalkAnalysisResult:
+    def fake_analyze(
+        sequence: TalkingFaceSequence, *, candidate_policy: object = None
+    ) -> DeepTalkAnalysisResult:
         analyzed.append((sequence.start_seconds, sequence.end_seconds))
         return DeepTalkAnalysisResult(
             face_observations=(),
@@ -249,7 +252,7 @@ def test_cli_verifies_then_scores_without_real_models(
             ),
         )
 
-    monkeypatch.setattr(cli, "analyze_sequence", fake_analyze)
+    monkeypatch.setattr(deeptalk, "analyze_sequence", fake_analyze)
     command = [
         "evaluate-benchmark",
         str(manifest_path),

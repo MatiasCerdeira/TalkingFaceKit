@@ -3,42 +3,27 @@
 Esta guía está organizada por resultados de usuario. Las APIs marcadas como objetivo son bocetos
 para discutir y validar antes de implementarlas.
 
-## Flujo prioritario: analizar un video
-
-**Objetivo inmediato.** El primer flujo nuevo combina capacidades concretas sin construir todavía
-una colección ni un pipeline genérico:
+## Flujo prioritario: analizar un video — disponible
 
 ```python
-from pathlib import Path
+from talkingfacekit import AnalysisConfig, TalkingFaceSequence, VisualPolicy
 
-from talkingfacekit.analysis import analyze_video
-from talkingfacekit.integrations.deeptalk import DeepTalkAnalyzer
-
-report = analyze_video(
-    "interview.mp4",
-    analyzer=DeepTalkAnalyzer(model_dir=Path("models/deeptalk")),
-)
-
-for segment in report.segments:
-    print(segment.start_seconds, segment.end_seconds, segment.status, segment.reasons)
+sequence = TalkingFaceSequence.from_video("interview.mp4")
+report = sequence.analyze(AnalysisConfig(visual_policy=VisualPolicy()))
+for segment in report.selected_segments:
+    print(segment.start_seconds, segment.end_seconds, segment.reason_codes)
+report.save("reports/interview.json")
+report.render_report("reports/interview.html")
 ```
 
-Los nombres son ilustrativos. El contrato importante es que el resultado incluya metadata, speech
-intervals, face tracks, raw ASD observations, segmentos preliminares, razones, capacidades no
-evaluadas y provenance. También debe poder generar un JSON y un overlay con la misma información.
+El extra `active-speaker-deeptalk` es necesario al ejecutar modelos. Las etapas opcionales se
+configuran con `AnalysisConfig`; SyncNet requiere checkpoint explícito y su extra. El resultado
+conserva observaciones crudas, selección, razones y timings sobre la fuente original. Guardar y
+renderizar el mismo resultado no repite inferencia. La CLI delega en el mismo flujo.
 
-El orden interno es:
-
-1. abrir `VideoSource` y seleccionar intervalo;
-2. obtener video y audio con timestamps fuente;
-3. adaptar inputs a DeepTalk-ASD;
-4. traducir outputs a valores core;
-5. aplicar política temporal de TalkingFaceKit;
-6. persistir/renderizar sin repetir inferencia.
-
-En esta primera versión, `camera_facing` y `av_sync` son `not_evaluated`. Se incorporan en etapas
-posteriores. El folder workflow ejecutará esta misma operación por archivo una vez que el reporte sea
-estable.
+Para una carpeta se usa `TalkingFaceCollection.from_folder(...).analyze(...)`: ejecución secuencial,
+resultados y errores individuales, progreso opcional y persistencia por fuente. Ver README y
+`examples/preprocess_folder.py` para el recorrido completo.
 
 ## 1. Inspección y selección de media
 
@@ -522,11 +507,11 @@ for item in dataset:
 Cada entrada debería contener ID estable, fuente, intervalo, splits y metadata del usuario sin
 acoplar el core a un dataset conocido.
 
-El primer acceso desde carpeta será más simple que un dataset general: descubrimiento determinista,
-un `VideoAnalysisReport` por archivo y un reporte agregado. Debe reutilizar exactamente el analizador
-de un video y aislar fallos por fuente. No se implementa antes de estabilizar ese resultado.
+El acceso desde carpeta ya está disponible con `TalkingFaceCollection` y `VideoAnalysisResult`:
+descubrimiento determinista, ejecución secuencial y fallos por fuente. Un dataset general sigue
+siendo un objetivo separado.
 
-### Ejecución por lotes — objetivo posterior al reporte de un video
+### Concurrencia, caché y reanudación — objetivos posteriores
 
 - límite explícito de workers y dispositivos;
 - progreso y logs estructurados;

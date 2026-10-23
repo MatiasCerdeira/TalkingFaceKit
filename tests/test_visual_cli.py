@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from talkingfacekit import TalkingFaceSequence, cli
+from talkingfacekit.integrations import deeptalk, syncnet
 from talkingfacekit.integrations.deeptalk import (
     DeepTalkAnalysisProvenance,
     DeepTalkAnalysisResult,
@@ -58,7 +59,7 @@ def test_visual_filter_reaches_json_html_benchmark_and_ui(
 ) -> None:
     fixture = Path(__file__).parent / "fixtures" / "example1.webm"
     raw = raw_result()
-    monkeypatch.setattr(cli, "analyze_sequence", lambda sequence: raw)
+    monkeypatch.setattr(deeptalk, "analyze_sequence", lambda sequence, **kwargs: raw)
     output, html = tmp_path / "analysis.json", tmp_path / "analysis.html"
     assert (
         cli.main(
@@ -149,7 +150,7 @@ def test_visual_stage_cannot_resurrect_sync_rejection(
 ) -> None:
     fixture = Path(__file__).parent / "fixtures" / "example1.webm"
     raw = raw_result()
-    monkeypatch.setattr(cli, "analyze_sequence", lambda sequence: raw)
+    monkeypatch.setattr(deeptalk, "analyze_sequence", lambda sequence, **kwargs: raw)
     policy = SynchronizationPolicy()
     window = SynchronizationWindow(
         0, 8, 1, "offset_detected", ("audio_video_offset",), 0.32, 8, 6, 1
@@ -169,7 +170,7 @@ def test_visual_stage_cannot_resurrect_sync_rejection(
         ) -> SynchronizationResult:
             return sync
 
-    monkeypatch.setattr(cli, "SyncNetVerifier", FakeVerifier)
+    monkeypatch.setattr(syncnet, "SyncNetVerifier", FakeVerifier)
     output = tmp_path / "analysis.json"
     assert (
         cli.main(
@@ -203,10 +204,12 @@ def test_visual_stage_cannot_resurrect_sync_rejection(
 def test_visual_configuration_fails_before_models(
     args: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fail(sequence: TalkingFaceSequence) -> DeepTalkAnalysisResult:
+    def fail(
+        sequence: TalkingFaceSequence, *, candidate_policy: object = None
+    ) -> DeepTalkAnalysisResult:
         pytest.fail("Invalid configuration must fail before inference")
 
-    monkeypatch.setattr(cli, "analyze_sequence", fail)
+    monkeypatch.setattr(deeptalk, "analyze_sequence", fail)
     with pytest.raises(SystemExit) as error:
         cli.main(["analyze-video", "missing.webm", *args])
     assert error.value.code == 2

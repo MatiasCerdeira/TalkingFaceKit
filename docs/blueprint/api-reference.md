@@ -589,23 +589,84 @@ def render_quality_report(
 ) -> Path: ...
 ```
 
-## Collection, pipeline y datasets — objetivos posteriores
+## Análisis público y colecciones — disponible
+
+El paquete raíz expone `AnalysisConfig`, `AnalysisTimings`, `VideoAnalysisResult`,
+`TalkingFaceSegment`, `TalkingFaceCollection`, `CollectionAnalysisResult`, `CollectionProgress`,
+`VideoAnalysisOutcome`, `AnalysisFailure` y `VideoAnalyzer`. Los tipos de evidencia sin frameworks
+viven en `talkingfacekit.active_speaker`; los nombres experimentales `DeepTalk*` siguen disponibles
+como aliases en la integración.
 
 ```python
-pipeline = Pipeline(steps=[...])
-result = pipeline.run(sequence, cache_dir=Path(".tfk-cache"))
+sequence.analyze(config: AnalysisConfig | None = None) -> VideoAnalysisResult
 
-dataset = TalkingFaceDataset.from_manifest(Path("dataset.jsonl"))
-batch_result = pipeline.run_batch(dataset, workers=4, on_error="continue")
+TalkingFaceCollection.from_folder(folder: str | Path, *, recursive: bool = False)
+TalkingFaceCollection.from_videos(videos: Iterable[str | Path])
+
+collection.analyze(
+    config: AnalysisConfig | None = None,
+    *,
+    output_dir: str | Path | None = None,
+    on_error: Literal["continue", "raise"] = "continue",
+    on_progress: Callable[[CollectionProgress], None] | None = None,
+    overwrite: bool = False,
+) -> CollectionAnalysisResult
 ```
 
-Estas APIs llegan después de operaciones concretas y persistencia multipista. El pipeline no debe
-ser un plugin system genérico ni aceptar objetos sin tipar. Cada step declara inputs, outputs,
-configuración normalizada y side effects.
+`AnalysisConfig` reúne `candidate_policy`, `visual_policy` opcional, `syncnet_model` opcional y
+`synchronization_policy`. No carga modelos al construirse. La colección contiene rutas pendientes,
+no videos precargados; abre cada fuente al procesarla y ejecuta en secuencia. `from_folder` ordena
+rutas relativas y reconoce extensiones comunes sin distinguir mayúsculas; una carpeta vacía no
+carga modelos. `from_videos` conserva el orden del caller.
 
-La primera extensión desde carpeta no necesita esperar un DAG ni adoptar este `Pipeline`: puede
-descubrir fuentes determinísticamente y ejecutar el analizador de un video en secuencia. Lo que sí
-debe esperar es un `VideoAnalysisReport` validado y estable.
+`VideoAnalysisResult` expone fuente/límites, `active_speaker`, `synchronization`, `visual_filter`,
+`timings`, `segments` y `selected_segments`. Los segmentos finales describen runs evaluados; las
+regiones preliminares fuera de esos runs siguen en `active_speaker.preliminary_segments`. Cada
+`TalkingFaceSegment` conserva `source`, `start_seconds`, `end_seconds`, `duration_seconds`,
+`face_id`, `status`, `reason_codes` y `to_sequence()` sin copiar media.
+
+`result.save(path, overwrite=False)` guarda JSON completo; `result.render_report(path,
+overwrite=False)` genera HTML con la misma evidencia sin repetir inferencia. La carpeta HTML debe
+existir y los videos deben permanecer accesibles. El JSON conserva el esquema v1 de la CLI con
+metadata y timings adicionales. La carga tipada desde JSON y los clips físicos siguen pendientes.
+
+El resultado de colección ofrece `items` en orden, `results`, `failures`, `selected_segments` y
+`save(...)` para su resumen. Con `output_dir`, cada éxito se guarda por archivo y `collection.json`
+se actualiza después de cada outcome. `CollectionProgress` se entrega al callback luego del guardado.
+Errores de modelos/media pueden continuar; errores de configuración, escritura y callback se
+propagan. Guardar progreso no implementa reanudación ni caché automática.
+
+## Evaluación desde Python — disponible
+
+```python
+collection.evaluate(
+    reference_path: str | Path,
+    *,
+    videos_dir: str | Path,
+    config: AnalysisConfig | None = None,
+    video_aliases: Mapping[str, str] | None = None,
+    on_progress: Callable[[EvaluationCaseResult], None] | None = None,
+) -> EvaluationResult
+```
+
+Acepta un manifiesto con hashes, una lista JSON de anotaciones o un directorio de listas. Procesa
+sólo las ventanas anotadas que corresponden a fuentes de la colección. `unannotated_videos` y
+`unmatched_annotation_files` explicitan las exclusiones; no afectan las métricas. `video_aliases`
+mapea nombres explícitamente para listas humanas, sin modificar sus tiempos; no remapea manifiestos.
+Sin ninguna ventana coincidente se produce un error antes de cargar modelos.
+
+El paquete raíz también exporta `evaluate_benchmark(reference_path, videos_dir, config=None, ...)`;
+sin colección exige que existan todos los videos referenciados. La CLI usa esa misma operación.
+`EvaluationResult.cases` conserva `EvaluationCaseResult.reference` y `.analysis`; `.metrics` y
+`.metrics_before_visual_filter` agregan precisión, recall y segundos de error. `.selected_segments`
+es una tupla de `TalkingFaceSegment`. `.save(path, overwrite=False)` guarda JSON compatible con
+`talkingfacekit.demo.render_benchmark_report(json_path, videos_dir, html_path)`. Guardar y renderizar
+no repiten inferencia. El HTML sigue siendo una vista opcional sobre los datos de evaluación.
+
+## Pipeline y datasets — objetivos posteriores
+
+Un pipeline genérico, manifiestos de datasets, caché y concurrencia acotada permanecen como
+objetivos futuros; no son necesarios para usar la colección secuencial disponible.
 
 ## Excepciones — dirección propuesta
 

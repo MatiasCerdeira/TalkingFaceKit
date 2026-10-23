@@ -9,9 +9,11 @@ from talkingfacekit import (
     FaceMeshTrack,
     TalkingFaceSequence,
     cli,
+    demo,
     load_landmark_track,
     save_landmark_track,
 )
+from talkingfacekit.integrations import deeptalk
 from talkingfacekit.integrations.deeptalk import (
     DeepTalkAnalysisProvenance,
     DeepTalkAnalysisResult,
@@ -340,7 +342,9 @@ def test_analyzes_active_speakers_and_prints_a_readable_summary(
         ),
     )
 
-    def fake_analyze_sequence(sequence: TalkingFaceSequence) -> DeepTalkAnalysisResult:
+    def fake_analyze_sequence(
+        sequence: TalkingFaceSequence, *, candidate_policy: object = None
+    ) -> DeepTalkAnalysisResult:
         analyzed_intervals.append(
             (sequence.source.path, sequence.start_seconds, sequence.end_seconds)
         )
@@ -354,6 +358,8 @@ def test_analyzes_active_speakers_and_prints_a_readable_summary(
         destination: str | Path,
         *,
         overwrite: bool,
+        synchronization: object = None,
+        visual_filter: object = None,
     ) -> Path:
         rendered_reports.append(
             (sequence.source.path, analysis_result, Path(destination), overwrite)
@@ -361,8 +367,8 @@ def test_analyzes_active_speakers_and_prints_a_readable_summary(
         report_path.write_text("rendered", encoding="utf-8")
         return report_path
 
-    monkeypatch.setattr(cli, "analyze_sequence", fake_analyze_sequence)
-    monkeypatch.setattr(cli, "render_active_speaker_report", fake_render_active_speaker_report)
+    monkeypatch.setattr(deeptalk, "analyze_sequence", fake_analyze_sequence)
+    monkeypatch.setattr(demo, "render_active_speaker_report", fake_render_active_speaker_report)
 
     exit_code = cli.main(
         [

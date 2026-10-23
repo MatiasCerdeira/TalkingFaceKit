@@ -18,9 +18,9 @@ import av
 import numpy as np
 from numpy.typing import NDArray
 
+from talkingfacekit.active_speaker import ActiveSpeakerResult, FaceObservation
 from talkingfacekit.audio import DecodedAudioChunk
 from talkingfacekit.integrations._syncnet_model import build_syncnet_model
-from talkingfacekit.integrations.deeptalk import DeepTalkAnalysisResult, DeepTalkFaceObservation
 from talkingfacekit.io.audio import stream_audio_chunks
 from talkingfacekit.io.video import stream_video_frames
 from talkingfacekit.sequence import TalkingFaceSequence
@@ -86,7 +86,7 @@ class SyncNetVerifier:
         self.initialization_seconds = time.perf_counter() - started
 
     def verify(
-        self, sequence: TalkingFaceSequence, analysis: DeepTalkAnalysisResult
+        self, sequence: TalkingFaceSequence, analysis: ActiveSpeakerResult
     ) -> SynchronizationResult:
         """Verify every structural candidate, preserving raw DeepTalk results unchanged.
 
@@ -142,7 +142,7 @@ class SyncNetVerifier:
     def measure_window(
         self,
         sequence: TalkingFaceSequence,
-        observations: tuple[DeepTalkFaceObservation, ...],
+        observations: tuple[FaceObservation, ...],
         face_id: int,
         start_seconds: float,
         end_seconds: float,
@@ -180,7 +180,7 @@ class SyncNetVerifier:
     def _measure_window(
         self,
         sequence: TalkingFaceSequence,
-        observations: tuple[DeepTalkFaceObservation, ...],
+        observations: tuple[FaceObservation, ...],
         face_id: int,
         start_seconds: float,
         end_seconds: float,
@@ -270,7 +270,7 @@ class SyncNetVerifier:
     def _read_video(
         self,
         sequence: TalkingFaceSequence,
-        observations: tuple[DeepTalkFaceObservation, ...],
+        observations: tuple[FaceObservation, ...],
         face_id: int,
         start: float,
         end: float,

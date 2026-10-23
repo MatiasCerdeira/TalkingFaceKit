@@ -34,7 +34,8 @@ Orden de implementación acordado:
    comparar TalkNet;
 5. verificar sincronía con SyncNet — implementado como etapa experimental opcional — y agregar
    orientación/tamaño/encuadre con la evidencia existente — implementado como filtro opcional;
-6. recién entonces generalizar el flujo a carpetas, datasets y ejecución batch.
+6. generalizar el flujo a carpetas — API pública y ejecución secuencial implementadas; concurrencia
+   y reanudación automática pendientes.
 
 La generación de landmarks y meshes ya implementada se conserva como capacidad visual opcional;
 no es el centro del producto. El estado detallado, la justificación y los criterios de decisión se
@@ -42,8 +43,106 @@ encuentran en [`PROJECT_DIRECTION.md`](PROJECT_DIRECTION.md), el
 [`roadmap`](docs/blueprint/roadmap.md) y el
 [`spike de DeepTalk-ASD`](docs/research/deeptalk_asd_compatibility.md).
 
-> **Estado:** análisis de un video, benchmark, sincronía y filtro visual están disponibles como
-> flujos experimentales. Colecciones, mirada ocular y evaluación integral de calidad siguen pendientes.
+> **Estado:** análisis de un video, colecciones secuenciales, benchmark, sincronía y filtro visual
+> están disponibles como flujos experimentales. Mirada ocular y evaluación integral de calidad siguen
+> pendientes.
+
+## Preprocesar desde Python
+
+Instalar el extra de análisis con `uv sync --extra active-speaker-deeptalk`. El backend continúa
+siendo experimental; sus pesos se resuelven al ejecutar el análisis, nunca al importar el paquete.
+Para una demo offline, preparar los modelos de antemano según la sección DeepTalk y usar
+`DEEPTALK_ASD_OFFLINE=1`.
+
+```python
+from talkingfacekit import AnalysisConfig, TalkingFaceSequence, VisualPolicy
+
+sequence = TalkingFaceSequence.from_video("conversation.mp4")
+result = sequence.analyze(AnalysisConfig(visual_policy=VisualPolicy()))
+
+for segment in result.selected_segments:
+    print(segment.start_seconds, segment.end_seconds, segment.reason_codes)
+    clip = segment.to_sequence()  # vista liviana; no copia ni recodifica el video
+
+result.save("reports/conversation.json")
+result.render_report("reports/conversation.html")  # reutiliza la misma inferencia
+```
+
+`from_video` inspecciona metadata; `analyze` ejecuta los modelos. Devuelve `VideoAnalysisResult`,
+con la fuente y sus límites, `active_speaker`, `synchronization`, `visual_filter`, `timings` y
+`selected_segments`. `segments` conserva las decisiones finales sobre los runs estructurales;
+los descartes preliminares de voz/rostros siguen en `active_speaker.preliminary_segments`.
+Los tiempos siempre corresponden al video original. La secuencia no se modifica y los resultados
+no contienen frames ni objetos de los frameworks. Sin configuración se ejecuta la selección
+estructural; el filtro visual y SyncNet son explícitos.
+
+Para una carpeta, sin manifiestos ni anotaciones humanas:
+
+```python
+from talkingfacekit import TalkingFaceCollection
+
+collection = TalkingFaceCollection.from_folder("data/raw", recursive=False)
+report = collection.analyze(output_dir="reports/collection")
+
+for video in report.results:
+    print(video.source.path, len(video.selected_segments))
+
+for failure in report.failures:
+    print(failure.path, failure.error_type, failure.message)
+
+for segment in report.selected_segments:
+    print(segment.source.path, segment.start_seconds, segment.end_seconds)
+```
+
+La colección contiene rutas absolutas, ordenadas por nombre relativo, y no abre los videos al
+descubrirlos. Reconoce extensiones de video comunes sin distinguir mayúsculas. La inspección ocurre
+por archivo al analizarlo, de modo que uno corrupto queda como error individual. Para elegir rutas
+manualmente se puede usar `TalkingFaceCollection.from_videos([...])`, que conserva el orden dado.
+Una carpeta vacía produce una colección vacía y no carga modelos.
+
+El procesamiento es secuencial. `on_error="continue"` registra errores de inspección/modelos y
+continúa; `on_error="raise"` registra y propaga el primero. Una selección vacía es un resultado
+exitoso. `on_progress` recibe un `CollectionProgress` después de cada resultado/error y su guardado;
+la capa de colección no configura logging ni imprime. El backend experimental puede emitir logs y
+mensajes del SDK durante su inicialización. Los errores de configuración, escritura y callbacks,
+así como `KeyboardInterrupt`, se propagan.
+
+Con `output_dir` se guarda un JSON completo por éxito y se actualiza atómicamente `collection.json`
+después de cada archivo, incluidos los fallidos. Los resultados completados permanecen disponibles
+si una corrida se interrumpe. Los nombres llevan un índice para evitar colisiones entre videos
+homónimos. Los archivos existentes requieren `overwrite=True`; no hay caché ni reanudación
+automática. El guardado lee la fuente para registrar SHA-256 y conserva el esquema JSON v1 de la CLI.
+`render_report` genera HTML que referencia el video original; no exporta clips físicos.
+
+Todas las entradas usan el mismo `AnalysisConfig`. Para verificar sincronización, instalar también
+`synchronization-syncnet` y proporcionar `syncnet_model=Path("models/syncnet_v2.model")` con el
+checkpoint oficial descrito más abajo. `synchronization_policy` permite cambiar sus umbrales y
+`candidate_policy` los estructurales. `VideoAnalyzer(config)` permite reutilizar el verificador de
+SyncNet al analizar manualmente varias secuencias. Cada video mantiene su propio estado DeepTalk.
+
+El [ejemplo ejecutable](examples/preprocess_folder.py) incluye progreso, errores y HTML por video.
+Los comandos existentes `analyze-video` y `evaluate-benchmark` delegan en la misma operación pública.
+
+Para la demo está [`examples/demo_preprocessing.py`](examples/demo_preprocessing.py): carga todos
+los videos de `data/eval/videos` y llama a `collection.evaluate(...)` sobre las **ventanas con
+anotación humana** de `benchmark/annotations`. Habilita filtro visual y SyncNet y guarda
+`reports/demo/demo.json` y `reports/demo/demo.html`, el comparador existente con selector de video,
+bandas humano/librería, precisión, recall y motivos. Con ambos extras y los modelos locales, ejecutar
+`DEEPTALK_ASD_OFFLINE=1 uv run python examples/demo_preprocessing.py` desde el repositorio.
+
+`evaluate` devuelve `EvaluationResult`: `cases` conserva referencias humanas y `VideoAnalysisResult`,
+`metrics` agrega por duración y `selected_segments` devuelve una tupla de `TalkingFaceSegment` lista
+para seguir trabajando. `save` guarda esos candidatos (fuente, inicio, fin, identidad y razones) y
+los datos de evaluación en JSON; `render_benchmark_report` es una vista opcional de ese archivo, sin
+inferencia adicional. No se exportan clips físicos. Las fuentes sin anotaciones aparecen en
+`unannotated_videos`, y las anotaciones fuera de la colección en `unmatched_annotation_files`;
+ninguna se cuenta como un caso negativo. `video_aliases` permite mapear nombres explícitamente sin
+editar etiquetas. Para un manifiesto aprobado se puede llamar directamente
+`evaluate_benchmark("benchmark/manifest.json", "data/eval/videos", config)` desde el paquete raíz;
+verifica hashes y conserva el comportamiento estricto de la CLI.
+
+El flujo habitual sin ground truth sigue siendo `collection.analyze()`. `evaluate` agrega la
+comparación humana para esta demostración. Ver el [recorrido de la demo](docs/demo_friday.md).
 
 ## Funcionalidad actual
 

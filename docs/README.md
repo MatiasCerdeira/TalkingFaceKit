@@ -14,11 +14,11 @@ El blueprint es deliberadamente más amplio que la versión `0.1.0`. No debe usa
 una API ya existe. Cada página distingue lo que está disponible de lo que todavía es un objetivo o
 una línea de investigación.
 
-La decisión vigente es probar primero un flujo completo para **un video**: audio con timestamps,
-DeepTalk-ASD detrás de un adapter, reporte de hablante activo y overlay de diagnóstico. MediaPipe
-queda como backend de pose/calidad, SyncNet como candidato posterior de sincronización, y el
-contenedor de carpetas se implementa sólo después de validar ese resultado. El orden y los criterios
-de aceptación están en el [`roadmap`](blueprint/roadmap.md).
+El flujo vigente ya ofrece análisis tipado de una secuencia y colecciones secuenciales desde
+carpeta. DeepTalk-ASD permanece experimental detrás de una integración; SyncNet y el filtro visual
+son etapas opcionales. `VideoAnalysisResult` reúne evidencia y selección, y la CLI usa el mismo
+analizador que la API Python. El orden de implementación y los pendientes se registran en el
+[`roadmap`](blueprint/roadmap.md).
 
 Para instalar, ejecutar y contribuir al estado actual del repositorio, consultar el
 [`README.md`](../README.md) y las reglas de [`AGENTS.md`](../AGENTS.md).

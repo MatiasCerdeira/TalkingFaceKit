@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 
+from talkingfacekit.analysis import AnalysisConfig, VideoAnalysisResult
 from talkingfacekit.io.video import inspect_video_metadata
 from talkingfacekit.tracking.landmarks import FaceLandmarkTrack, LandmarkTracker
 from talkingfacekit.video import VideoSource
@@ -145,6 +146,26 @@ class TalkingFaceSequence:
             start_seconds=start_seconds,
             end_seconds=resolved_end_seconds,
         )
+
+    def analyze(self, config: AnalysisConfig | None = None) -> VideoAnalysisResult:
+        """Analyze this interval and return evidence and selected source-time segments.
+
+        Parameters
+        ----------
+        config
+            Structural policy and optional synchronization/visual stages. Omitted configuration
+            preserves the experimental structural-only defaults. Model loading and decoding are
+            explicit side effects of this call, never of ``from_video`` or ``clip``.
+
+        Returns
+        -------
+        VideoAnalysisResult
+            Completed immutable results. The sequence and its attached landmark tracks remain
+            unchanged, including when decoding or a model raises an exception.
+        """
+        from talkingfacekit.processing import analyze_sequence
+
+        return analyze_sequence(self, config)
 
     @property
     def duration_seconds(self) -> float | None:

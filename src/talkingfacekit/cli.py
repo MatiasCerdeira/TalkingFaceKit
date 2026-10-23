@@ -5,31 +5,26 @@ import hashlib
 import json
 import logging
 import re
-import subprocess
-import time
 from collections.abc import Sequence
-from dataclasses import asdict
-from importlib.metadata import version
 from pathlib import Path
 from typing import cast
 
 import numpy as np
 
-from talkingfacekit.demo import render_active_speaker_report, render_benchmark_report
+from talkingfacekit.active_speaker import ActiveSpeakerResult
+from talkingfacekit.analysis import AnalysisConfig
+from talkingfacekit.demo import render_benchmark_report
 from talkingfacekit.evaluation import (
-    EvaluationInterval,
-    combine_evaluation_metrics,
+    EvaluationCaseResult,
     load_evaluation_cases,
     parse_evaluation_cases,
     prepare_evaluation_manifest,
-    score_evaluation_case,
     verify_evaluation_videos,
 )
-from talkingfacekit.integrations.deeptalk import DeepTalkAnalysisResult, analyze_sequence
-from talkingfacekit.integrations.syncnet import SyncNetVerifier
 from talkingfacekit.io.landmarks import load_landmark_track, save_landmark_track
 from talkingfacekit.io.video import inspect_video_metadata
 from talkingfacekit.mesh import FaceMeshTrack
+from talkingfacekit.processing import VideoAnalyzer, evaluate_benchmark
 from talkingfacekit.rendering import render_face_mesh_html
 from talkingfacekit.sequence import TalkingFaceSequence
 from talkingfacekit.synchronization import SynchronizationPolicy, SynchronizationResult
@@ -37,11 +32,8 @@ from talkingfacekit.tracking.landmarks import FaceLandmarkTrack
 from talkingfacekit.tracking.mediapipe import MediaPipeFaceTracker
 from talkingfacekit.tracking.mediapipe_mesh import build_mediapipe_face_mesh
 from talkingfacekit.visual import (
-    VisualObservation,
     VisualPolicy,
-    VisualRegion,
     VisualResult,
-    assess_visual_suitability,
 )
 
 
@@ -378,98 +370,6 @@ def _make_visual_policy(arguments: argparse.Namespace) -> VisualPolicy | None:
     return policy
 
 
-def _apply_visual_filter(
-    sequence: TalkingFaceSequence,
-    result: DeepTalkAnalysisResult,
-    policy: VisualPolicy | None,
-    synchronization: SynchronizationResult | None,
-) -> VisualResult | None:
-    if policy is None:
-        return None
-    intervals = [
-        VisualRegion(
-            run.source_start_seconds,
-            run.source_end_seconds,
-            run.face_id,
-            run.status,
-            run.reason_codes,
-        )
-        for run in result.candidate_runs
-        if synchronization is None or run.status != "candidate"
-    ]
-    if synchronization is not None:
-        expected = {
-            (run.source_start_seconds, run.source_end_seconds, run.face_id)
-            for run in result.candidate_runs
-            if run.status == "candidate"
-        }
-        actual = {
-            (item.source_start_seconds, item.source_end_seconds, item.face_id)
-            for item in synchronization.decisions
-        }
-        if actual != expected or len(actual) != len(synchronization.decisions):
-            raise ValueError("sync decisions must cover every structural candidate exactly once")
-        intervals.extend(
-            VisualRegion(
-                item.source_start_seconds,
-                item.source_end_seconds,
-                item.face_id,
-                item.status,
-                item.reason_codes,
-            )
-            for item in synchronization.decisions
-        )
-    intervals.sort(key=lambda item: item.source_start_seconds)
-    return assess_visual_suitability(
-        intervals,
-        (
-            VisualObservation(
-                item.source_timestamp_seconds,
-                item.face_id,
-                item.bounding_box_xywh,
-                item.head_pose_yaw_pitch_roll_degrees,
-            )
-            for item in result.face_observations
-        ),
-        image_width=sequence.source.metadata.width,
-        image_height=sequence.source.metadata.height,
-        video_sample_rate_hz=result.provenance.video_sample_rate_hz,
-        policy=policy,
-    )
-
-
-def _selected_regions(
-    result: DeepTalkAnalysisResult,
-    synchronization: SynchronizationResult | None,
-    visual: VisualResult | None = None,
-) -> tuple[VisualRegion, ...]:
-    if visual is not None:
-        return tuple(item for item in visual.decisions if item.status == "candidate")
-    if synchronization is not None:
-        return tuple(
-            VisualRegion(
-                item.source_start_seconds,
-                item.source_end_seconds,
-                item.face_id,
-                item.status,
-                item.reason_codes,
-            )
-            for item in synchronization.decisions
-            if item.status == "candidate"
-        )
-    return tuple(
-        VisualRegion(
-            run.source_start_seconds,
-            run.source_end_seconds,
-            run.face_id,
-            run.status,
-            run.reason_codes,
-        )
-        for run in result.candidate_runs
-        if run.status == "candidate"
-    )
-
-
 def _print_visual_summary(visual: VisualResult | None) -> None:
     if visual is None:
         return
@@ -483,17 +383,19 @@ def _print_visual_summary(visual: VisualResult | None) -> None:
         )
 
 
-def _make_syncnet_verifier(arguments: argparse.Namespace) -> SyncNetVerifier | None:
-    policy = SynchronizationPolicy(
+def _make_analysis_config(arguments: argparse.Namespace) -> AnalysisConfig:
+    synchronization_policy = SynchronizationPolicy(
         tolerance_seconds=arguments.sync_tolerance_ms / 1000,
         minimum_confidence=arguments.sync_minimum_confidence,
         maximum_offset_seconds=arguments.sync_maximum_offset_seconds,
     )
-    if arguments.syncnet_model is None:
-        if policy != SynchronizationPolicy():
-            raise ValueError("sync thresholds require --syncnet-model")
-        return None
-    return SyncNetVerifier(arguments.syncnet_model, policy=policy)
+    if arguments.syncnet_model is None and synchronization_policy != SynchronizationPolicy():
+        raise ValueError("sync thresholds require --syncnet-model")
+    return AnalysisConfig(
+        visual_policy=_make_visual_policy(arguments),
+        syncnet_model=arguments.syncnet_model,
+        synchronization_policy=synchronization_policy,
+    )
 
 
 def _extract_landmarks(arguments: argparse.Namespace) -> int:
@@ -570,8 +472,8 @@ def _analyze_video(arguments: argparse.Namespace) -> int:
             raise FileExistsError(f"analysis output already exists: {output_path}")
         if output_path.resolve() == video_path.resolve():
             raise ValueError("analysis output must differ from source video")
-    visual_policy = _make_visual_policy(arguments)
-    verifier = _make_syncnet_verifier(arguments)
+    config = _make_analysis_config(arguments)
+    analyzer = VideoAnalyzer(config)
 
     sequence = TalkingFaceSequence.from_video(video_path)
     if start_seconds is not None or end_seconds is not None:
@@ -581,76 +483,22 @@ def _analyze_video(arguments: argparse.Namespace) -> int:
     previous_logging_disable_level = logging.root.manager.disable
     logging.disable(logging.CRITICAL)
     try:
-        started = time.perf_counter()
-        result = analyze_sequence(sequence)
-        deeptalk_seconds = time.perf_counter() - started
+        analysis = analyzer.analyze(sequence)
+        result = analysis.active_speaker
     finally:
         logging.disable(previous_logging_disable_level)
-    synchronization = None if verifier is None else verifier.verify(sequence, result)
-    visual = _apply_visual_filter(sequence, result, visual_policy, synchronization)
+    synchronization = analysis.synchronization
+    visual = analysis.visual_filter
     _print_active_speaker_summary(sequence, result)
     if synchronization is not None:
         _print_synchronization_summary(synchronization)
     _print_visual_summary(visual)
     if output_path is not None:
-        with sequence.source.path.open("rb") as source_stream:
-            source_sha256 = hashlib.file_digest(source_stream, "sha256").hexdigest()
-        document = {
-            "schema_version": 1,
-            "source": str(sequence.source.path.resolve()),
-            "source_sha256": source_sha256,
-            "package_version": version("talkingfacekit"),
-            "code_revision": _code_revision(),
-            "interval": [sequence.start_seconds, sequence.end_seconds],
-            "face_observations": [asdict(item) for item in result.face_observations],
-            "speech_intervals": [asdict(item) for item in result.speech_intervals],
-            "score_windows": [
-                {
-                    "source_start_seconds": item.source_start_seconds,
-                    "source_end_seconds": item.source_end_seconds,
-                    "raw_scores": dict(item.raw_scores),
-                }
-                for item in result.score_windows
-            ],
-            "preliminary_segments": [asdict(item) for item in result.preliminary_segments],
-            "candidate_runs": [asdict(item) for item in result.candidate_runs],
-            "candidate_policy": asdict(result.candidate_policy),
-            "shot_boundaries": [asdict(item) for item in result.shot_boundaries],
-            "audio_timeline_repairs": [asdict(item) for item in result.audio_timeline_repairs],
-            "issues": list(result.issues),
-            "provenance": asdict(result.provenance),
-            "synchronization": None if synchronization is None else asdict(synchronization),
-            "visual_filter": None if visual is None else asdict(visual),
-            "selected_intervals": [
-                asdict(item) for item in _selected_regions(result, synchronization, visual)
-            ],
-            "timings": {
-                "deeptalk_seconds": deeptalk_seconds,
-                "syncnet_initialization_seconds": 0
-                if verifier is None
-                else verifier.initialization_seconds,
-            },
-        }
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(
-            json.dumps(document, indent=2, allow_nan=False) + "\n", encoding="utf-8"
-        )
-        print(f"output: {output_path}")
+        saved_path = analysis.save(output_path, overwrite=overwrite)
+        print(f"output: {saved_path}")
     if report_path is not None:
         resolved_report_path = _available_report_path(report_path, overwrite=overwrite)
-        if synchronization is None and visual is None:
-            saved_path = render_active_speaker_report(
-                sequence, result, resolved_report_path, overwrite=overwrite
-            )
-        else:
-            saved_path = render_active_speaker_report(
-                sequence,
-                result,
-                resolved_report_path,
-                overwrite=overwrite,
-                synchronization=synchronization,
-                visual_filter=visual,
-            )
+        saved_path = analysis.render_report(resolved_report_path, overwrite=overwrite)
         print(f"report: {saved_path}")
     return 0
 
@@ -710,80 +558,29 @@ def _evaluate_benchmark(arguments: argparse.Namespace) -> int:
             )
 
     cases = load_evaluation_cases(manifest_path)
-    video_paths = verify_evaluation_videos(cases, videos_dir)
+    verify_evaluation_videos(cases, videos_dir)
     print(f"verified {len(cases)} benchmark cases and their source video hashes")
     if verify_only:
         return 0
 
-    visual_policy = _make_visual_policy(arguments)
-    verifier = _make_syncnet_verifier(arguments)
-    case_reports: list[dict[str, object]] = []
-    case_metrics = []
-    before_visual_metrics = []
-    for case in cases:
-        sequence = TalkingFaceSequence.from_video(video_paths[case.case_id]).clip(
-            case.window.start_seconds, case.window.end_seconds
-        )
-        started = time.perf_counter()
-        result = analyze_sequence(sequence)
-        deeptalk_seconds = time.perf_counter() - started
-        if not result.score_windows:
-            raise RuntimeError(f"{case.case_id}: analysis returned no score windows")
-        synchronization = None if verifier is None else verifier.verify(sequence, result)
-        if synchronization is not None:
-            _print_synchronization_summary(synchronization)
-        before_visual = tuple(
-            EvaluationInterval(item.source_start_seconds, item.source_end_seconds)
-            for item in _selected_regions(result, synchronization)
-        )
-        visual = _apply_visual_filter(sequence, result, visual_policy, synchronization)
-        _print_visual_summary(visual)
-        predicted = tuple(
-            EvaluationInterval(item.source_start_seconds, item.source_end_seconds)
-            for item in _selected_regions(result, synchronization, visual)
-        )
-        before_metrics = score_evaluation_case(case, before_visual)
-        before_visual_metrics.append(before_metrics)
-        metrics = score_evaluation_case(case, predicted)
-        case_metrics.append(metrics)
+    config = _make_analysis_config(arguments)
+
+    def report_case(case: EvaluationCaseResult) -> None:
+        if case.analysis.synchronization is not None:
+            _print_synchronization_summary(case.analysis.synchronization)
+        _print_visual_summary(case.analysis.visual_filter)
+        metrics = case.metrics
         print(
-            f"{case.case_id}: precision={_format_ratio(metrics.precision)} "
+            f"{case.reference.case_id}: precision={_format_ratio(metrics.precision)} "
             f"recall={_format_ratio(metrics.recall)} "
             f"false_accept={metrics.false_positive_seconds:.2f}s "
             f"missed={metrics.false_negative_seconds:.2f}s"
         )
-        case_reports.append(
-            {
-                "id": case.case_id,
-                "file": case.file.as_posix(),
-                "sha256": case.sha256,
-                "window": [case.window.start_seconds, case.window.end_seconds],
-                "selected": [[item.start_seconds, item.end_seconds] for item in case.selected],
-                "ignore": [[item.start_seconds, item.end_seconds] for item in case.ignored],
-                "predicted": [[item.start_seconds, item.end_seconds] for item in predicted],
-                "predicted_before_visual_filter": [
-                    [item.start_seconds, item.end_seconds] for item in before_visual
-                ],
-                "metrics_before_visual_filter": asdict(before_metrics),
-                "metrics": asdict(metrics),
-                "backend_version": result.provenance.backend_version,
-                "candidate_policy": asdict(result.candidate_policy),
-                "issues": list(result.issues),
-                "synchronization": None if synchronization is None else asdict(synchronization),
-                "visual_filter": None if visual is None else asdict(visual),
-                "timings": {"deeptalk_seconds": deeptalk_seconds},
-                "diagnostics": {
-                    "preliminary_segments": [asdict(item) for item in result.preliminary_segments],
-                    "candidate_runs": [asdict(item) for item in result.candidate_runs],
-                    "shot_boundaries": [
-                        item.source_timestamp_seconds for item in result.shot_boundaries
-                    ],
-                },
-            }
-        )
-    overall = combine_evaluation_metrics(tuple(case_metrics))
-    before_overall = combine_evaluation_metrics(tuple(before_visual_metrics))
-    if visual_policy is not None:
+
+    result = evaluate_benchmark(manifest_path, videos_dir, config, on_progress=report_case)
+    overall = result.metrics
+    before_overall = result.metrics_before_visual_filter
+    if config.visual_policy is not None:
         print(
             f"before visual: precision={_format_ratio(before_overall.precision)} "
             f"recall={_format_ratio(before_overall.recall)} "
@@ -797,23 +594,7 @@ def _evaluate_benchmark(arguments: argparse.Namespace) -> int:
         f"missed={overall.false_negative_seconds:.2f}s"
     )
     if output_path is not None:
-        report = {
-            "schema_version": 1,
-            "package_version": version("talkingfacekit"),
-            "code_revision": _code_revision(),
-            "manifest": str(manifest_path),
-            "manifest_sha256": manifest_digest,
-            "cases": case_reports,
-            "overall": asdict(overall),
-            "overall_before_visual_filter": asdict(before_overall),
-            "syncnet_initialization_seconds": None
-            if verifier is None
-            else verifier.initialization_seconds,
-        }
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(
-            json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-        )
+        result.save(output_path, overwrite=overwrite)
         print(f"output: {output_path}")
     return 0
 
@@ -845,32 +626,6 @@ def _format_ratio(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.1%}"
 
 
-def _code_revision() -> dict[str, str | bool | None]:
-    repository = Path(__file__).resolve().parents[2]
-    if not (repository / ".git").exists():
-        return {"commit": None, "dirty": None}
-    try:
-        commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repository,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        status = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=repository,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError:
-        return {"commit": None, "dirty": None}
-    if commit.returncode != 0 or status.returncode != 0:
-        return {"commit": None, "dirty": None}
-    return {"commit": commit.stdout.strip(), "dirty": bool(status.stdout.strip())}
-
-
 def _available_report_path(path: Path, *, overwrite: bool) -> Path:
     """Return the requested report path or the first available numbered sibling."""
     if overwrite or not path.is_file():
@@ -886,7 +641,7 @@ def _available_report_path(path: Path, *, overwrite: bool) -> Path:
 
 def _print_active_speaker_summary(
     sequence: TalkingFaceSequence,
-    result: DeepTalkAnalysisResult,
+    result: ActiveSpeakerResult,
 ) -> None:
     face_ids = sorted({observation.face_id for observation in result.face_observations})
     interval_end = "EOF" if sequence.end_seconds is None else f"{sequence.end_seconds:.3f}"

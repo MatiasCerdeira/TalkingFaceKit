@@ -63,8 +63,9 @@ La biblioteca debería permitir que un usuario:
 - exporte manifests o clips normalizados con transformaciones explícitas;
 - elija de forma explícita backend, dispositivo, modelo y política de precisión.
 
-La primera experiencia objetivo es `video -> reporte de hablante visible`, no un pipeline genérico
-ni un contenedor de colecciones. El [roadmap](roadmap.md) define el orden exacto.
+La experiencia disponible es `video -> VideoAnalysisResult` y su extensión secuencial mediante
+`TalkingFaceCollection.from_folder(...)`. Reanudación automática y pipelines genéricos siguen
+pendientes. El [roadmap](roadmap.md) distingue las entregas actuales de los objetivos posteriores.
 
 ## Qué no debería prometer
 

@@ -6,10 +6,12 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import cast
+
+from talkingfacekit.analysis import TalkingFaceSegment, VideoAnalysisResult, decision_regions
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +82,114 @@ class EvaluationMetrics:
     ignored_seconds: float
     precision: float | None
     recall: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationCaseResult:
+    """Keep a human reference and its analysis on the original source timeline.
+
+    Parameters
+    ----------
+    reference
+        Human labels and the exact window analyzed, in source seconds.
+    analysis
+        Complete model evidence and typed segment decisions for that window.
+    """
+
+    reference: EvaluationCase
+    analysis: VideoAnalysisResult
+
+    @property
+    def predicted(self) -> tuple[EvaluationInterval, ...]:
+        """Selected source-time intervals after all configured stages."""
+        return tuple(
+            EvaluationInterval(item.start_seconds, item.end_seconds)
+            for item in self.analysis.selected_segments
+        )
+
+    @property
+    def predicted_before_visual_filter(self) -> tuple[EvaluationInterval, ...]:
+        """Selected source-time intervals before optional visual filtering."""
+        return tuple(
+            EvaluationInterval(item.source_start_seconds, item.source_end_seconds)
+            for item in decision_regions(
+                self.analysis.active_speaker, self.analysis.synchronization
+            )
+            if item.status == "candidate"
+        )
+
+    @property
+    def metrics(self) -> EvaluationMetrics:
+        """Duration-weighted agreement with the human reference."""
+        return score_evaluation_case(self.reference, self.predicted)
+
+    @property
+    def metrics_before_visual_filter(self) -> EvaluationMetrics:
+        """Agreement before optional visual filtering, using the same human labels."""
+        return score_evaluation_case(self.reference, self.predicted_before_visual_filter)
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationResult:
+    """Retain evaluation data independently of the optional HTML view.
+
+    Parameters
+    ----------
+    cases
+        Analyzed human windows with their complete evidence, in input order.
+    manifest, manifest_sha256
+        Reference input path and digest. For annotation lists/directories the digest covers the
+        generated, canonical JSON manifest, including source-video hashes.
+    syncnet_initialization_seconds
+        One-time model initialization duration, or None when disabled.
+    unannotated_videos, unmatched_annotation_files
+        Collection sources without labels and annotation video names outside the collection.
+        Neither is treated as a negative example or included in the metrics.
+    """
+
+    cases: tuple[EvaluationCaseResult, ...]
+    manifest: Path
+    manifest_sha256: str
+    syncnet_initialization_seconds: float | None = None
+    unannotated_videos: tuple[Path, ...] = ()
+    unmatched_annotation_files: tuple[PurePosixPath, ...] = ()
+
+    @property
+    def selected_segments(self) -> tuple[TalkingFaceSegment, ...]:
+        """Candidate references with source path, source-second bounds, face ID and reasons."""
+        return tuple(segment for case in self.cases for segment in case.analysis.selected_segments)
+
+    @property
+    def metrics(self) -> EvaluationMetrics:
+        """Micro-aggregate duration-weighted metrics over the evaluated windows."""
+        return combine_evaluation_metrics(tuple(case.metrics for case in self.cases))
+
+    @property
+    def metrics_before_visual_filter(self) -> EvaluationMetrics:
+        """Micro-aggregate agreement before optional visual filtering."""
+        return combine_evaluation_metrics(
+            tuple(case.metrics_before_visual_filter for case in self.cases)
+        )
+
+    def save(self, path: str | Path, *, overwrite: bool = False) -> Path:
+        """Save evaluation data as JSON compatible with the existing benchmark comparator.
+
+        Parameters
+        ----------
+        path
+            JSON destination. Parent directories are created; reference inputs are protected.
+        overwrite
+            Allow atomic replacement of an existing result. Defaults to refusing replacement.
+
+        Returns
+        -------
+        pathlib.Path
+            Saved report, including typed candidate references serialized as source intervals.
+            Saving runs no models and exports no physical video clips.
+        """
+        from talkingfacekit.io.evaluation import save_evaluation_result
+
+        return save_evaluation_result(self, path, overwrite=overwrite)
 
 
 def load_evaluation_cases(path: Path) -> tuple[EvaluationCase, ...]:
@@ -158,7 +268,13 @@ def parse_evaluation_cases(document: object) -> tuple[EvaluationCase, ...]:
     return tuple(cases)
 
 
-def prepare_evaluation_manifest(annotations_path: Path, videos_dir: Path) -> dict[str, object]:
+def prepare_evaluation_manifest(
+    annotations_path: Path,
+    videos_dir: Path,
+    *,
+    include_files: frozenset[PurePosixPath] | None = None,
+    video_aliases: Mapping[str, str] | None = None,
+) -> dict[str, object]:
     """Build a hashed manifest from simple human annotations without running models.
 
     Parameters
@@ -170,6 +286,11 @@ def prepare_evaluation_manifest(annotations_path: Path, videos_dir: Path) -> dic
         Each file/window pair must be unique across all annotation files.
     videos_dir
         Local directory containing the referenced videos.
+    include_files
+        Optional collection scope. Other annotation video names are recorded in
+        ``unmatched_annotation_files`` without requiring those media locally. Default is strict.
+    video_aliases
+        Explicit annotation filename to local relative filename mapping. Labels are unchanged.
 
     Returns
     -------
@@ -187,6 +308,13 @@ def prepare_evaluation_manifest(annotations_path: Path, videos_dir: Path) -> dic
     if not root.is_dir():
         raise FileNotFoundError(f"benchmark video directory not found: {videos_dir}")
     cases: list[dict[str, object]] = []
+    aliases = {
+        _relative_video_path(source, "video alias source"): _relative_video_path(
+            target, "video alias target"
+        )
+        for source, target in ({} if video_aliases is None else video_aliases).items()
+    }
+    unmatched: set[PurePosixPath] = set()
     seen_ids: set[str] = set()
     known_hashes: dict[Path, str] = {}
     for location, row in _annotation_rows(annotations_path.expanduser()):
@@ -200,6 +328,10 @@ def prepare_evaluation_manifest(annotations_path: Path, videos_dir: Path) -> dic
             _number(item.get("end_seconds"), f"{location}.end_seconds"),
         )
         selected = _intervals(item.get("selected"), f"{location}.selected", window)
+        file = aliases.get(file, file)
+        if include_files is not None and file not in include_files:
+            unmatched.add(file)
+            continue
         case_id = f"{file.as_posix()}:{window.start_seconds}-{window.end_seconds}"
         if case_id in seen_ids:
             raise ValueError(f"duplicate benchmark case: {case_id} in {location}")
@@ -223,7 +355,10 @@ def prepare_evaluation_manifest(annotations_path: Path, videos_dir: Path) -> dic
                 ],
             }
         )
-    return {"schema_version": 1, "cases": cases}
+    manifest: dict[str, object] = {"schema_version": 1, "cases": cases}
+    if include_files is not None:
+        manifest["unmatched_annotation_files"] = [file.as_posix() for file in sorted(unmatched)]
+    return manifest
 
 
 def _annotation_rows(path: Path) -> Iterator[tuple[str, object]]:

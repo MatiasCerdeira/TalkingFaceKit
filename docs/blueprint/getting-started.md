@@ -34,35 +34,43 @@ uv add "talkingfacekit[all]"                 # Objetivo; sólo cuando la matriz 
 Dentro de este repositorio se usa `uv sync --extra <nombre>`. TalkingFaceKit nunca debería instalar
 o descargar modelos en el momento del import.
 
-## Cinco minutos: video a segmentos candidatos — objetivo prioritario
+## Cinco minutos: video a segmentos candidatos — disponible
 
-La experiencia principal futura será analizar primero un video:
+Después de instalar `uv sync --extra active-speaker-deeptalk` y preparar los modelos para uso
+offline, el flujo público es:
 
 ```python
-from pathlib import Path
+from talkingfacekit import AnalysisConfig, TalkingFaceSequence, VisualPolicy
 
-from talkingfacekit.analysis import analyze_video
-from talkingfacekit.integrations.deeptalk import DeepTalkAnalyzer
-
-report = analyze_video(
-    "interview.mp4",
-    analyzer=DeepTalkAnalyzer(model_dir=Path("models/deeptalk")),
+result = TalkingFaceSequence.from_video("interview.mp4").analyze(
+    AnalysisConfig(visual_policy=VisualPolicy())
 )
-
-for segment in report.segments:
-    print(segment.start_seconds, segment.end_seconds, segment.status, segment.reasons)
-
-report.save_json("outputs/interview-analysis.json")
-report.render_overlay("outputs/interview-analysis.mp4")
+for segment in result.selected_segments:
+    print(segment.start_seconds, segment.end_seconds, segment.reason_codes)
+result.save("reports/interview.json")
+result.render_report("reports/interview.html")
 ```
 
-Esta API es ilustrativa y todavía no funciona. El audio PyAV con timestamps ya está disponible; el
-orden restante es adapter DeepTalk experimental, reporte/overlay de un video y evaluación de seis
-casos. El primer reporte marca pose y sync como `not_evaluated`; no promete segmentos completamente
-válidos antes de medirlos.
+`save` crea el directorio de salida; `render_report` requiere que exista. Los tiempos son de fuente,
+los videos no se reescriben y los candidatos siguen siendo experimentales. SyncNet se habilita con
+checkpoint explícito en `AnalysisConfig`; mirada ocular y calidad visual integral quedan pendientes.
 
-La instalación del backend y la forma de obtener sus modelos se definirán con su adapter. No se
-agregará una dependencia ni se descargarán assets implícitamente.
+Para varias fuentes:
+
+```python
+from talkingfacekit import TalkingFaceCollection
+
+collection = TalkingFaceCollection.from_folder("data/raw")
+report = collection.analyze(output_dir="reports/collection")
+for result in report.results:
+    print(result.source.path, result.selected_segments)
+for failure in report.failures:
+    print(failure.path, failure.message)
+```
+
+La colección es secuencial y guarda cada éxito y el resumen incremental cuando se indica
+`output_dir`. No implementa caché ni reanudación automática. Ver el README para callbacks, política
+de errores y configuración de etapas.
 
 ## Cinco minutos: video a landmarks y mesh — capacidad visual existente
 

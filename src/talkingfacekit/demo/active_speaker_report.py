@@ -10,7 +10,7 @@ from dataclasses import asdict
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from talkingfacekit.integrations.deeptalk import DeepTalkAnalysisResult
+from talkingfacekit.active_speaker import ActiveSpeakerResult
 from talkingfacekit.sequence import TalkingFaceSequence
 from talkingfacekit.synchronization import SynchronizationResult
 from talkingfacekit.visual import VisualResult
@@ -907,7 +907,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
 
 def render_active_speaker_report(
     sequence: TalkingFaceSequence,
-    result: DeepTalkAnalysisResult,
+    result: ActiveSpeakerResult,
     output_path: str | Path,
     *,
     overwrite: bool = False,
@@ -961,8 +961,8 @@ def render_active_speaker_report(
     """
     if not isinstance(sequence, TalkingFaceSequence):
         raise TypeError(f"sequence must be a TalkingFaceSequence, got {type(sequence).__name__}")
-    if not isinstance(result, DeepTalkAnalysisResult):
-        raise TypeError(f"result must be a DeepTalkAnalysisResult, got {type(result).__name__}")
+    if not isinstance(result, ActiveSpeakerResult):
+        raise TypeError(f"result must be a ActiveSpeakerResult, got {type(result).__name__}")
 
     source_path = _validate_source_path(sequence.source.path)
     path = _validate_output_path(output_path, overwrite=overwrite)
@@ -999,7 +999,7 @@ def render_active_speaker_report(
 
 def _build_report_payload(
     sequence: TalkingFaceSequence,
-    result: DeepTalkAnalysisResult,
+    result: ActiveSpeakerResult,
     *,
     source_path: Path,
 ) -> dict[str, object]:
@@ -1131,7 +1131,7 @@ def _build_report_payload(
 
 def _resolve_interval_end(
     sequence: TalkingFaceSequence,
-    result: DeepTalkAnalysisResult,
+    result: ActiveSpeakerResult,
 ) -> float:
     if sequence.end_seconds is not None:
         return sequence.end_seconds

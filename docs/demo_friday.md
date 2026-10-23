@@ -1,6 +1,49 @@
 # Demo del viernes 23 de octubre de 2026
 
-## Mensaje principal
+## Script de preprocesamiento para mostrar desde Python
+
+El ejemplo de la demo es [`examples/demo_preprocessing.py`](../examples/demo_preprocessing.py).
+Desde la raíz de TalkingFaceKit, con los extras y modelos ya preparados:
+
+```bash
+DEEPTALK_ASD_OFFLINE=1 uv run python examples/demo_preprocessing.py
+```
+
+Ejecutar desde la raíz del repositorio, con los extras `active-speaker-deeptalk` y
+`synchronization-syncnet`, y `models/syncnet_v2.model` preparados. En Windows, establecer
+`DEEPTALK_ASD_OFFLINE=1` con la sintaxis de la shell correspondiente.
+
+El script completo tiene como máximo 20 líneas. Descubre los videos de `data/eval/videos` y llama a
+`videos.evaluate(...)` con las anotaciones humanas. Analiza exclusivamente las ventanas anotadas,
+con filtro visual y SyncNet. El alias explícito de iPhone relaciona el nombre anotado con el archivo
+local sin cambiar los intervalos humanos. Los videos sin etiquetas y las etiquetas sin archivo
+local quedan listados en el resultado y fuera de las métricas.
+
+`evaluation` es un `EvaluationResult`: contiene las referencias humanas, los análisis completos y
+las métricas. `clips = evaluation.selected_segments` conserva una tupla de `TalkingFaceSegment`;
+cada elemento tiene `source.path`, `start_seconds`, `end_seconds`, `face_id` y `reason_codes`.
+`clip.to_sequence()` permite continuar con una vista del intervalo sin copiar ni recodificar media.
+
+El script guarda solamente:
+
+- `reports/demo/demo.json`: evaluación, candidatos con fuente y límites temporales, métricas y motivos;
+- `reports/demo/demo.html`: el comparador existente, con selector de video, bandas humano/librería,
+  precisión, recall y evidencia de las decisiones.
+
+El ejemplo permite reemplazar explícitamente esos dos archivos con `overwrite=True`. El HTML es una
+vista del JSON y se genera sin volver a ejecutar modelos. Referencia los videos originales: mantener
+sus rutas para reproducirlos. Preparar esta corrida antes de la presentación y abrir `demo.html`.
+Para procesar una carpeta sin anotaciones humanas se usa `videos.analyze()`; la evaluación agrega
+la comparación con el criterio humano necesaria para esta demo.
+
+## Mensaje de producto
+
+La demo puede comenzar desde Python: `TalkingFaceSequence.from_video(...).analyze()` devuelve
+`VideoAnalysisResult`; `TalkingFaceCollection.from_folder(...).analyze(...)` procesa una carpeta
+secuencialmente sin anotaciones humanas. Mostrar `selected_segments`, sus tiempos y motivos, y un
+error individual junto a los resultados exitosos. El ejemplo `examples/preprocess_folder.py`
+guarda JSON por archivo, progreso y HTML sin repetir inferencia para renderizarlo. El benchmark
+sigue siendo la herramienta separada para comparar la selección con las anotaciones humanas.
 
 TalkingFaceKit recibe un video y propone intervalos candidatos de una persona hablando. Combina
 modelos existentes con reglas propias de selección y continuidad, y muestra la evidencia detrás de
