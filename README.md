@@ -319,7 +319,7 @@ El resultado también contiene una primera clasificación conservadora por subin
 
 Cada segmento incluye razones machine-readable, los IDs observados y el score sin modificar. Un
 `candidate` preliminar no es todavía un clip aceptado. TalkingFaceKit detecta cortes de escena con
-`ContentDetector` de PySceneDetect usando sus valores por defecto. El detector recibe los mismos
+`AdaptiveDetector` de PySceneDetect usando sus valores por defecto. El detector recibe los mismos
 frames ya decodificados y muestreados a 25 Hz para DeepTalk, sin abrir ni decodificar el video otra
 vez, y compara cambios de color e intensidad en vez de limitarse a frames negros. El timestamp de
 fuente queda en `shot_boundaries`; los intervalos preliminares se dividen allí y dos candidatos

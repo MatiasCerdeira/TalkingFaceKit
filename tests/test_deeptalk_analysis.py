@@ -10,6 +10,7 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from talkingfacekit import DecodedVideoFrame, TalkingFaceSequence, VideoMetadata, VideoSource
 from talkingfacekit.integrations import deeptalk
@@ -152,22 +153,26 @@ def test_analyzes_one_sequence_on_a_single_source_relative_timeline(
     assert result.score_windows[1].raw_scores[7] == 1.75
 
 
-def test_content_detector_finds_a_scene_cut_on_the_source_timeline(
+def test_scene_detector_finds_a_hard_cut_between_portraits_on_the_same_background(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pytest.importorskip("scenedetect")
     sequence = make_sequence(start_seconds=10.0, end_seconds=11.6)
+    image_y, image_x = np.ogrid[:64, :96]
+    portrait_mask = ((image_x - 48) / 32) ** 2 + ((image_y - 32) / 22) ** 2 <= 1
+
+    def portrait(rgb: tuple[int, int, int]) -> NDArray[np.uint8]:
+        frame = np.full((64, 96, 3), (25, 45, 50), dtype=np.uint8)
+        frame[portrait_mask] = rgb
+        return frame
+
     frames = [
         (
             10.0 + index / 25,
             DecodedVideoFrame(
                 frame_index=300 + index,
                 timestamp_seconds=10.0 + index / 25,
-                rgb=np.full(
-                    (32, 48, 3),
-                    (255, 0, 0) if index < 20 else (255, 255, 255),
-                    dtype=np.uint8,
-                ),
+                rgb=portrait((220, 170, 140) if index < 20 else (100, 140, 210)),
             ),
         )
         for index in range(40)

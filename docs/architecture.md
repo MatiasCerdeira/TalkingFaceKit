@@ -380,10 +380,11 @@ do not retain face observations after audio coverage ends.
 
 The first TalkingFaceKit-owned policy is deliberately pre-calibration and remains represented by
 integration-specific immutable values while DeepTalk is the only evaluated backend. The existing
-25 Hz frames sampled from the shared PyAV stream are passed to PySceneDetect's `ContentDetector`
-with its defaults. Only RGB-to-BGR channel conversion is added; the source is not opened or decoded
-a second time. Each detected scene cut is copied into an immutable `DeepTalkShotBoundary` with its
-source timestamp.
+25 Hz frames sampled from the shared PyAV stream are passed to PySceneDetect's `AdaptiveDetector`
+with its defaults. Its minimum content change and rolling local ratio help distinguish hard cuts
+between similarly framed speakers from sustained motion. Only RGB-to-BGR channel conversion is
+added; the source is not opened or decoded a second time. Each detected scene cut is copied into an
+immutable `DeepTalkShotBoundary` with its source timestamp.
 
 The policy splits score windows at active VAD and scene-cut boundaries and rejects regions with no
 speech, no visible face, simultaneous faces, changing face identity, or a non-positive raw score. A

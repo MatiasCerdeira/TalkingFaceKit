@@ -215,7 +215,7 @@ class ShotBoundary:
     Parameters
     ----------
     source_timestamp_seconds
-        Timestamp of the sampled 25 Hz video slot where ``ContentDetector`` found the cut, in
+        Timestamp of the sampled 25 Hz video slot where PySceneDetect found the cut, in
         seconds on the original source-media timeline.
 
     Raises

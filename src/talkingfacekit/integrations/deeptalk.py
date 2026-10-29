@@ -328,11 +328,11 @@ def _iter_deeptalk_video_frames(
     shot_boundaries: list[DeepTalkShotBoundary],
 ) -> Iterator[tuple[float, object]]:
     scene_detect = cast(Any, import_module("scenedetect"))
-    content_detector = cast(Any, import_module("scenedetect.detectors")).ContentDetector()
+    scene_detector = cast(Any, import_module("scenedetect.detectors")).AdaptiveDetector()
     for source_timestamp_seconds, source_frame in _sample_video_frames_25_fps(sequence):
         relative_timestamp_seconds = source_timestamp_seconds - sequence.start_seconds
         frame_number = round(relative_timestamp_seconds * _VIDEO_FPS)
-        cuts = content_detector.process_frame(
+        cuts = scene_detector.process_frame(
             scene_detect.FrameTimecode(frame_number, fps=float(_VIDEO_FPS)),
             np.ascontiguousarray(source_frame.rgb[..., ::-1]),
         )
