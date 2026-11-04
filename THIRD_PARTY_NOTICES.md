@@ -1,5 +1,28 @@
 # Third-party notices
 
+## SMIRK preparation and encoder
+
+`src/talkingfacekit/integrations/smirk.py` adapts the MediaPipe configuration and face crop from
+`utils/mediapipe_utils.py` and `demo_video.py`; `_smirk_model.py` adapts the network architecture in
+`src/smirk_encoder.py`, all from
+https://github.com/georgeretsi/smirk/tree/c7de404c4389f073906a6db1adabf62efcea3f35.
+The MIT license is included in `src/talkingfacekit/integrations/SMIRK_LICENSE.txt`.
+Backbone initialization disables pretrained ImageNet acquisition and requires a complete SMIRK
+state dictionary. No SMIRK checkpoint, FLAME asset or renderer is distributed with the package.
+
+## FLAME2020 geometry and model assets
+
+The NumPy decoder in `integrations/flame.py`, `_flame_model.py` and `_flame_assets.py` implements
+the FLAME blend-shape and articulated linear blend skinning model. FLAME reference:
+Li et al., "Learning a model of facial shape and expression from 4D scans", SIGGRAPH Asia 2017,
+https://doi.org/10.1145/3130800.3130813.
+
+Geometry is numerically compared with the external SMIRK FLAME decoder at the revision above;
+the Max Planck FLAME/LBS source files are not included in this package. The official FLAME2020
+model and SMIRK eyelid deformation files are explicit local assets, not distributed here. Their
+own terms apply independently from this library's source code:
+https://flame.is.tue.mpg.de/modellicense.html.
+
 ## SyncNet-v2
 
 `src/talkingfacekit/integrations/_syncnet_model.py` adapts the network architecture in

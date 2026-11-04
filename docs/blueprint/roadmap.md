@@ -1,9 +1,27 @@
 # Roadmap de implementación
 
-> **Dirección vigente desde 2026-09-08.** Este roadmap ordena el trabajo alrededor del nuevo
-> objetivo: encontrar intervalos de video útiles para datasets donde un rostro visible realmente
-> produce el habla audible. Distingue capacidades disponibles, spikes terminados y código todavía
-> no implementado.
+> **Actualizado el 1 de noviembre de 2026.** La dirección vigente está en
+> [`PROJECT_DIRECTION.md`](../../PROJECT_DIRECTION.md) y el reparto entre Juanita, Juan y Matias en
+> el [plan del equipo](../team_tasks.md). La etapa actual integra selección y parámetros FLAME,
+> simplifica la API pública y prioriza rendimiento y limpieza. SMIRK estima parámetros por frame de
+> forma experimental; generación de geometría FLAME y persistencia siguen pendientes.
+
+## Prioridades de la etapa actual
+
+| Frente | Responsable | Siguiente entrega |
+| --- | --- | --- |
+| Datos y revisión | Juanita | Inventario, selecciones humanas y casos reproducibles de errores |
+| Evaluación y mediciones | Juan | Comparaciones de calidad y tiempos sobre entradas fijas |
+| API pública | Matias | Ejemplos mínimos para video, carpeta, FLAME y guardado/carga |
+| Extracción FLAME | Matias | Primer clip con parámetros, timestamps, validez e inspección visual |
+| Persistencia y mantenimiento | Juan, con contratos definidos por Matias | Carga de resultados y consolidación de lógica repetida |
+| Rendimiento y arquitectura | Matias | Optimización de un costo dominante con comparación antes/después |
+
+Los tres frentes comienzan en paralelo. La prueba FLAME usa un clip disponible mientras se completa
+el benchmark. Juanita revisa sus resultados cuando haya un prototipo; Juan agrega persistencia
+FLAME cuando se acuerde el contrato. La reanudación sigue a la carga de resultados y a la definición
+de compatibilidad de caché. Las entregas numeradas más abajo conservan el recorrido de construcción
+del preprocesamiento y sus criterios de aceptación.
 
 ## Resultado de producto
 
@@ -16,8 +34,10 @@ video_005.mp4
 00:08.050–00:13.000  uncertain  face_2  competing face score
 ```
 
-Más adelante, orientación a cámara, calidad visual y sincronización A/V convertirán los segmentos
-candidatos en segmentos aceptados según una política configurable. El análisis individual ya alimenta una colección secuencial; un sistema concurrente sigue pendiente.
+El filtro visual y SyncNet ya aportan decisiones opcionales sobre los candidatos. La calidad visual
+integral sigue pendiente. El análisis individual alimenta una colección secuencial; un sistema
+concurrente se evaluará según mediciones. El próximo recorrido agrega parámetros FLAME sobre los
+segmentos seleccionados y resultados guardables, recargables e inspeccionables.
 
 ## Regla de avance
 
@@ -53,7 +73,7 @@ Base disponible: source timeline + video frames + MediaPipe landmarks/mesh
 4. evaluación de seis casos y gate de backend
                   /-----------+-----------\
                  v                       v
-5. pose/calidad MediaPipe         6. sync explícito SyncNet
+5. pose/tamaño InspireFace        6. sync explícito SyncNet
                   \-----------+-----------/
                               v
 7. política final de segmentos
@@ -64,6 +84,9 @@ Base disponible: source timeline + video frames + MediaPipe landmarks/mesh
                               v
 9. normalización/export reproducible
 ```
+
+Sobre la selección disponible comienza la nueva entrega FLAME descrita más abajo. El diseño de la
+API, la evaluación y las mediciones acompañan esa integración.
 
 Direct LR-ASD ONNX y TalkNet son rutas condicionales dentro del gate, no trabajos paralelos.
 
@@ -81,8 +104,8 @@ El repositorio ya ofrece:
 - CLI para extraer, inspeccionar y visualizar landmarks;
 - tests unitarios y fixtures pequeños.
 
-Estas capacidades se conservan. Landmarks, mesh y rendering pasan a ser herramientas visuales
-opcionales; ya no definen la promesa principal del producto.
+Estas capacidades se conservan. Landmarks, mesh y rendering aportan herramientas visuales; la nueva
+etapa integra parámetros FLAME en el recorrido de producto.
 
 Limitaciones históricas de la base inicial, resueltas progresivamente en las entregas siguientes:
 
@@ -253,20 +276,14 @@ para tomar esta primera decisión.
 El gate debe dejar una nota de decisión con ejemplos, métricas y limitaciones. No se reemplaza una
 mala atribución audiovisual con heurísticas de movimiento de boca.
 
-## Entrega 5 — orientación a cámara y calidad visual
+## Entrega 5 — filtro visual implementado; calidad integral pendiente
 
-Una vez que el hablante visible funciona:
+El filtro opcional reutiliza pose y bounding boxes InspireFace para orientación, tamaño y encuadre,
+con decisiones temporales y razones propias. Los límites actuales admiten vistas de tres cuartos.
+La evaluación de mirada ocular, nitidez, iluminación y oclusiones queda sujeta a errores observados
+y necesidades del entrenamiento. MediaPipe conserva su recorrido de landmarks y mesh.
 
-1. reutilizar MediaPipe para pose de cabeza y señales visuales;
-2. medir tamaño de rostro, cobertura, oclusión y proximidad al borde;
-3. definir tolerancias de yaw, pitch y roll con ejemplos etiquetados;
-4. decidir por evidencia si head pose alcanza o si gaze necesita un modelo separado;
-5. incorporar razones visuales a la política sin alterar los scores ASD.
-
-Resultado: los segmentos candidatos pueden clasificarse por suitability visual. MediaPipe sigue sin
-ser prueba de quién habla.
-
-## Entrega 6 — sincronización A/V explícita
+## Entrega 6 — sincronización A/V explícita, implementada como etapa opcional
 
 Evaluar SyncNet con desplazamientos conocidos, por ejemplo ±40, ±80, ±160 y ±320 ms. El resultado
 debe incluir offset estimado, score/confianza con semántica documentada, ventana analizada y estados
@@ -274,6 +291,10 @@ debe incluir offset estimado, score/confianza con semántica documentada, ventan
 
 Aplicar una corrección temporal es una operación separada. ASD y mouth motion no sustituyen esta
 medición.
+
+La integración SyncNet-v2 y sus pruebas con desplazamientos conocidos están descritas en
+[`syncnet_verification.md`](../research/syncnet_verification.md). La validación en más videos sigue
+formando parte de la evaluación ampliada.
 
 ## Entrega 7 — política final de segmentos
 
@@ -314,15 +335,30 @@ Cuando el cliente defina el formato de entrenamiento:
 - distinguir normalización temporal de inputs de modelo de normalización permanente del dataset;
 - no sobrescribir media fuente por defecto.
 
+## Nueva entrega — extracción FLAME y recorrido integrado
+
+1. Definir ejemplos de la API deseada para analizar, seleccionar, extraer, guardar y recargar.
+2. Probar un extractor existente sobre un clip corto; comparar candidatos por compatibilidad,
+   calidad, hardware y costo antes de elegir la primera integración.
+3. Definir parámetros, versión de modelo, coordenadas, unidades, shapes, timestamps, identidad,
+   máscaras de validez y provenance a partir de esa prueba.
+4. Integrar la extracción sobre segmentos seleccionados con contratos independientes del framework.
+5. Guardar y recargar parámetros sin repetir inferencia, y visualizar su correspondencia temporal.
+6. Revisar resultados con los casos del equipo y medir el costo añadido.
+
+**Cierre:** un clip seleccionado produce parámetros FLAME reutilizables y una inspección temporal
+comprensible mediante una API breve. La limpieza y las optimizaciones se validan con las mismas
+entradas y configuraciones. El entrenamiento de un modelo nuevo queda fuera de esta entrega.
+
 ## Trabajo postergado
 
 No pertenece al camino crítico actual:
 
 - ASR, forced alignment, fonemas, visemas y prosodia;
-- FLAME, textura, retargeting y animación generativa;
+- textura, retargeting y entrenamiento de modelos de animación;
 - reconocimiento de identidad entre videos;
 - diarización completa si ASD ya resuelve el caso;
-- scene detection hasta que los errores lo justifiquen;
+- reemplazos adicionales del detector de escenas salvo que los errores lo justifiquen;
 - pipeline/plugin system genérico;
 - persistencia multipista `.tfk` antes de necesitar más de un artefacto estable;
 - scheduler distribuido, cloud service o UI web.
@@ -332,7 +368,8 @@ un requerimiento posterior de la tesis.
 
 ## Próximo trabajo
 
-Ensayar el flujo Python de carpeta → análisis → selección y reportes para la demo. El ejemplo
-`examples/preprocess_folder.py` incluye progreso y errores. La mejora de velocidad requiere medir
-etapas antes de introducir concurrencia; está fuera de esta entrega. Exportar clips físicos y
-reanudación/caché se priorizarán según el uso real del cliente.
+Juanita organiza el material y los casos de validación; Juan automatiza comparaciones y mediciones;
+Matias define los ejemplos de API e inicia la prueba FLAME. Las optimizaciones de rendimiento y la
+limpieza forman parte de esta etapa. La descarga de los videos nuevos y actualización del manifiesto
+se completan cuando estén disponibles las fuentes; no bloquean el prototipo FLAME ni las mediciones
+sobre material existente. Ver entregables y dependencias en el [plan del equipo](../team_tasks.md).

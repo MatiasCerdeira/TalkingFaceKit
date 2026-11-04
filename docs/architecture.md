@@ -14,6 +14,12 @@ The library owns media timelines, backend-independent results, temporal aggregat
 reports. It does not own the pretrained perception models. Existing landmark, mesh, and rendering
 features remain supported as optional visual capabilities rather than the primary product workflow.
 
+The product direction updated on 2026-11-01 adds FLAME parameter extraction on selected segments,
+public API simplification, measured performance improvements and code consolidation to the active
+plan. Raw FLAME parameter estimation, saved results and FLAME2020 geometry evaluation are available;
+training-quality validation and saved-analysis loading remain pending. See [product direction](../PROJECT_DIRECTION.md) and
+[team tasks](team_tasks.md). The sections below describe the implemented architecture.
+
 ## Design principles
 
 1. Keep the domain model independent from external processing frameworks.
@@ -74,6 +80,174 @@ it separately. The folder workflow now adds lightweight source discovery, sequen
 typed per-source outcomes and incremental persistence around the same single-video result.
 
 ## Public analysis and sequential collections
+
+### Preliminary SMIRK input preparation
+
+`integrations.smirk.iter_smirk_inputs` is an experimental integration-level iterator, not a new
+root export or sequence method. It consumes the existing PyAV RGB frame stream without resampling,
+preserves source indices and PTS, and yields bounded-memory NumPy encoder inputs. MediaPipe runs in
+IMAGE mode with the options from SMIRK's upstream helper: one face, detection and presence thresholds
+0.1, blendshapes and transformation matrices enabled. This is separate from the existing VIDEO-mode
+MediaPipe landmark tracker.
+
+The crop follows the official extent formula, integer crop size and 1.4 scale, with scikit-image
+similarity estimation and warping. Channel-independent warping accepts source RGB directly, then
+casts to uint8 and normalizes to contiguous RGB float32 arrays shaped `(1, 3, 224, 224)`. Each result
+also retains the source-to-crop matrix; this matrix is not a FLAME camera. No PyTorch tensor or
+backend object escapes the boundary.
+
+Optional imports and model loading begin during iteration, using an explicit local Landmarker
+asset. Each decoded source frame yields either `SmirkInputFrame` or `SmirkMissingFrame`. An empty
+MediaPipe landmark result yields the latter with original index/PTS and the stable reason
+`face_landmarks_unavailable`; it does not distinguish detector versus presence-stage failure or
+claim that the source is unusable by another estimator. Preparation continues at the next frame.
+This orchestration policy differs from the official cropped demo's stop behavior, while preserving
+the upstream detection options and crop algorithm. No frame is silently removed or replaced.
+The decoder and detector are closed on completion, failure, or explicit iterator close. Consumers
+that stop early must close the iterator.
+
+The `tracking-smirk` extra now supplies the preparation and encoder dependencies. Numerical tests
+compare the RGB warp against the official BGR preprocessing sequence. The original input iterator
+remains usable independently of the encoder.
+
+### Experimental SMIRK parameter estimation
+
+`flame.FlameParameters` is a core NumPy value for one per-image estimate: explicit model basis,
+shape/expression vectors, and head/jaw axis-angle rotations in radians. Core dimensions follow the
+basis; no SMIRK framework object or import enters the value. Per-image shape is not silently
+aggregated, and unsupported eye/neck parameters are not represented as measured zeros.
+
+`integrations.smirk.SmirkEncoder` loads an explicit local checkpoint once on construction, hashes it,
+uses tensor-only CPU loading, and requires every encoder state key before strict loading. Device
+selection is explicit, CPU by default. `_smirk_model.build_smirk_model` adapts the upstream three
+towers with matching state names and forward operations. Backbones use `pretrained=False`; the full
+SMIRK checkpoint supplies the weights without acquiring ImageNet assets.
+
+`predict` accepts one prepared crop, executes in inference mode, validates expected output shapes
+and finite values, and copies compact results to CPU NumPy arrays. `SmirkParameterFrame` retains
+source index/PTS, core facial parameters, extra left/right eyelid coefficients, crop camera,
+source-to-crop transform and checkpoint hash. Its crop camera and eyelid deformation basis remain
+integration-specific; a future PEAR adapter must not silently reinterpret them.
+
+`track` composes the existing preparation iterator and `predict`, without active-speaker execution,
+FPS conversion or retaining input pixels in predictions. It returns one `SmirkParameterFrame` or
+`SmirkMissingFrame` per decoded source frame. Absences bypass the encoder and contain no crop or
+fabricated parameters; only absent landmarks are recoverable, while configuration, decoder,
+detector runtime, crop-validation and encoder errors propagate. Even an entirely undetected
+interval retains one absence per frame. Source selection remains unchanged: this stage never
+splits/rejects segments or interpolates gaps. Training-window eligibility is a subsequent policy,
+which must account for absences and must not concatenate across gaps as if time were continuous.
+Closing or failing the outer iterator also closes preparation resources. There is no public
+sequence reconstruction facade or backend registry in this step.
+
+### Complete FLAME results and persistence
+
+`flame.FlameResult` is a framework-independent, complete-interval value. It stores source identity,
+metadata and SHA-256, requested half-open interval, explicit model basis, int64 source frame indices,
+float64 PTS, a boolean estimation mask, one absence reason per row, and float32 shape/expression and
+head/jaw axis-angle arrays. Model-specific coefficient dimensions remain explicit in the arrays.
+Every parameter row is finite when estimated and entirely NaN when absent; the mask describes
+availability, not accuracy or training eligibility. Reasons are empty exactly on estimated rows.
+Source frames and timestamps must increase strictly and remain within the requested interval.
+
+Named NumPy `extras` retain actual backend-specific output, with equally keyed `extra_conventions`
+describing units and axes. SMIRK stores `smirk_eyelids` (float32 left/right deformation coefficients),
+`smirk_camera` (float32 crop orthographic camera) and `smirk_source_to_crop` (float64 homogeneous
+source-pixel-to-crop matrices). Every extra uses the same frame axis and absence mask. These values
+are not promoted to generic FLAME camera/eye semantics. Text provenance records backend, checkpoint
+and preprocessing asset hashes, upstream revision, runtime versions, device, preprocessing settings
+and local code commit/dirty state when available. Mappings are copied and frozen; arrays must be
+treated as read-only.
+
+`SmirkEncoder.extract` consumes `track` and materializes only compact outputs, including an entirely
+undetected interval. It normalizes the source path to absolute and hashes source bytes once before
+decoding, adding a full-file read to extraction. Asset and package provenance are collected here,
+never during saving or loading. Runtime errors propagate without returning a partial complete
+result. This entry point does not enforce a selected face ID, aggregate shape, interpolate gaps or
+modify segment eligibility. The streaming `track` API remains available for bounded-memory callers.
+
+`FlameResult.save` and `.load` are convenience facades that delegate lazily to `io.flame`, following
+the existing analysis result pattern. Construction is pure. The compressed NPZ schema 1 stores
+numeric arrays, a Unicode reason vector, namespaced extra arrays and a Unicode JSON metadata scalar
+identified by `kind=talkingfacekit.flame`. Loading uses `allow_pickle=False`, rejects unsupported
+versions and inconsistent fields, and reconstructs the core value to validate every array contract.
+Loading needs neither inference extras nor source/model files and does not assert that any current
+video matches the recorded source digest. No weights, tensors, images or mesh data enter the archive.
+
+Saving creates parent directories, writes a temporary archive in the destination filesystem and
+publishes it only after serialization succeeds. Existing outputs require explicit overwrite; an
+atomic hard link refuses concurrent destination creation when overwrite is false, and replacement
+is atomic when true. Failed writes clean up their temporary files and preserve previous outputs.
+Saving cannot overwrite the recorded source path. This is complete-result persistence, not incremental
+checkpointing, automatic inference caching or collection resumption.
+
+### FLAME2020 geometry evaluation
+
+`integrations.flame.FlameDecoder` loads an explicit local generic FLAME2020 asset and evaluates a
+`FlameResult` into the existing `FaceMeshTrack`. `_flame_assets` isolates legacy asset reading and
+validation; `_flame_model` evaluates the blend shapes, joint hierarchy, Rodrigues rotations,
+pose correctives and linear blend skinning in NumPy. No upstream executable is imported in
+production, and no FLAME/LBS source files, models or landmark embeddings are bundled.
+Only vertices and triangles are needed; landmark interpolation and camera projection are separate.
+
+The official pickle contains a raw Chumpy `Ch.x` coefficient array and a SciPy CSC joint regressor.
+The reader maps those two serialized containers to data-only holders and expands their numerical
+arrays with NumPy. It recognizes a limited set of NumPy pickle constructors and rejects unknown
+globals before validating geometry; it is not a sandbox for untrusted files. It never imports
+Chumpy/SciPy, patches NumPy globals or evaluates a legacy graph. Float32 conversion matches the
+reference's numerical dtype. The model has five ordered root/neck/jaw/eye joints and 36 pose
+correctives; expression columns start at offset 300. Structural checks cannot prove the asset's
+declared year or gender, so callers must supply the matching trusted generic model.
+
+`decode` rejects incompatible model bases/coefficient dimensions. It processes available frames
+in bounded numerical batches (32 by default), leaving all absent vertex rows NaN and copying source
+indices, PTS and mask. It materializes the complete mesh output, preserves raw per-frame identity
+and expressions, applies global/jaw rotations, and explicitly fixes neck/eye rotations to neutral.
+It does not reinterpret a crop camera as a world translation or convert native model units/axes.
+
+For SMIRK, both the `smirk_eyelids` coefficients and local left/right deformation assets are required.
+Offsets are added right-then-left after skinning, matching the upstream vertex path. They are
+never silently ignored. Other geometry-compatible backends need not supply that extension; this
+adapter depends on the shared result rather than importing the SMIRK encoder. Asset hashes and
+neutral-pose assumptions are exposed in `decoder.provenance`; mesh topology includes the model
+hash. No new dependency or generic backend protocol is introduced, and gradients/GPU are outside
+this initial NumPy implementation.
+
+The existing optional Plotly renderer can inspect the resulting topology. It still materializes
+all animation frames, uses median display timing and does not overlay video. Local reference
+comparison uses the pinned external SMIRK decoder and all available saved frames, independently
+from analytic synthetic tests for shape, expression, pose, joints, eyelids and absent-frame handling.
+
+### Source-video and mesh comparison
+
+`render_face_mesh_html(..., source_video=...)` adds an offline side-by-side comparison without
+changing the standalone 3D animation path. `_video_mesh` owns its serializer and HTML controller;
+the renderer remains tracker-independent and accepts the same `FaceMeshTrack`. The original local
+video is referenced by file URL, never copied or decoded in rendering. A local file picker can
+rebind the same original when a browser refuses direct loading; no file is uploaded.
+
+The video's presented-frame `mediaTime` drives frame selection through `requestVideoFrameCallback`,
+with currentTime-based animation-frame/timeupdate fallbacks. A binary search selects the latest
+mesh PTS at or before that source time, without nominal-FPS conversion or a second playback clock.
+An explicit `video_time_offset_seconds` maps source PTS = browser media time + offset, zero by
+default; the renderer does not infer that mapping or verify video identity. Missing rows hide the
+mesh rather than displaying the last available geometry. Source index, mesh PTS and video source
+time remain visible. Seeking and frame buttons use stored PTS, and playback stops at the last
+sampled PTS. This is visual comparison, not a pixel-accurate overlay or an A/V sync measurement.
+
+Plotly is initialized once with one topology, then only the active vertex coordinates are updated.
+The controller serializes asynchronous updates and retains the latest pending frame; slow rendering
+may skip visual updates during playback, so exact row inspection uses pause/seek. Camera interaction
+is preserved. Geometry is encoded once as base64 little-endian float32, retaining NaN absences;
+triangles, timestamps and mask are stored once. This reduces serialized size compared with the old
+per-frame Plotly trace export, while still materializing the complete interval and embedding Plotly.
+
+Generated metadata is escaped for inline JSON, user text is HTML-escaped, and output publication is
+atomic with explicit overwrite. Controller regressions run in Node with a simulated DOM/media clock,
+covering irregular PTS, source offsets, missing rows and seeking; these tests do not substitute for
+interactive browser/rendering QA.
+
+### Existing analysis contracts
 
 `active_speaker.py` owns immutable framework-independent observations, raw score windows,
 provenance, structural policies and pure candidate aggregation. These values were extracted from

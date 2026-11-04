@@ -1,7 +1,8 @@
 # TalkingFaceKit
 
 TalkingFaceKit es una biblioteca modular en Python para analizar videos y localizar intervalos útiles
-para datasets de personas hablando.
+para datasets de personas hablando. La siguiente etapa integra parámetros de animación facial
+compatibles con FLAME sobre los segmentos seleccionados.
 
 ## Dirección actual del proyecto
 
@@ -14,38 +15,269 @@ biblioteca debe poder recibir videos arbitrarios y responder, sobre la línea te
 - qué intervalos cumplen criterios posteriores de orientación a cámara, calidad y sincronización;
 - por qué un intervalo fue aceptado, rechazado o marcado como incierto.
 
-El primer milestone será un analizador de **un solo video** que genere resultados estructurados y
-un video de diagnóstico. DeepTalk-ASD es el backend experimental elegido para obtener rápidamente
-detección/tracking de rostros, VAD y scores de hablante activo. No será parte del modelo de dominio
-ni se considera todavía una dependencia estable. TalkingFaceKit conservará los timestamps fuente,
-traducirá los outputs a contratos propios y decidirá la política de segmentos. La pose de InspireFace
+El análisis de **un solo video** y su extensión a colecciones secuenciales ya generan resultados
+estructurados y reportes inspeccionables. DeepTalk-ASD es el backend experimental para
+detección/tracking de rostros, VAD y scores de hablante activo. Permanece detrás de una integración
+y no se considera todavía una dependencia estable. TalkingFaceKit conserva los timestamps fuente,
+traduce los outputs a contratos propios y decide la política de segmentos. La pose de InspireFace
 y sus bounding boxes alimentan un filtro visual experimental opcional; MediaPipe conserva su flujo
 de landmarks y mesh. SyncNet-v2 verifica sincronización A/V explícita como etapa opcional posterior
 a los candidatos.
 
-Orden de implementación acordado:
+Prioridades acordadas el 1 de noviembre de 2026:
 
-1. ~~agregar `DecodedAudioChunk` y audio PyAV por streaming con timestamps de fuente~~ — completo;
-2. construir un adapter experimental y acotado para DeepTalk-ASD — implementado y validado con
-   tests sintéticos y un smoke test end-to-end con modelos reales;
-3. producir para un video speech intervals, face tracks, `raw_score`, segmentos candidatos,
-   razones y provenance, además de un overlay inspeccionable;
-4. evaluar seis casos mínimos y decidir si conservar DeepTalk, adaptar LR-ASD directamente o
-   comparar TalkNet;
-5. verificar sincronía con SyncNet — implementado como etapa experimental opcional — y agregar
-   orientación/tamaño/encuadre con la evidencia existente — implementado como filtro opcional;
-6. generalizar el flujo a carpetas — API pública y ejecución secuencial implementadas; concurrencia
-   y reanudación automática pendientes.
+1. simplificar la API pública para video, carpeta, extracción facial y guardado/carga;
+2. iniciar una integración de extracción de parámetros FLAME sobre un clip seleccionado;
+3. medir y optimizar los costos dominantes de procesamiento;
+4. consolidar recorridos compartidos y eliminar redundancias del código;
+5. completar la evaluación y la carga de resultados persistidos.
 
-La generación de landmarks y meshes ya implementada se conserva como capacidad visual opcional;
-no es el centro del producto. El estado detallado, la justificación y los criterios de decisión se
-encuentran en [`PROJECT_DIRECTION.md`](PROJECT_DIRECTION.md), el
-[`roadmap`](docs/blueprint/roadmap.md) y el
-[`spike de DeepTalk-ASD`](docs/research/deeptalk_asd_compatibility.md).
+Los landmarks y meshes MediaPipe existentes se conservan. SMIRK ya ofrece estimación experimental
+de parámetros FLAME por frame y un decoder separado genera geometría FLAME2020 desde esos resultados.
+La dirección y los criterios de aceptación están en [`PROJECT_DIRECTION.md`](PROJECT_DIRECTION.md).
+El [plan del equipo](docs/team_tasks.md) distribuye tareas y entregables entre Juanita, Juan y Matias;
+el [`roadmap`](docs/blueprint/roadmap.md) ordena las entregas.
 
 > **Estado:** análisis de un video, colecciones secuenciales, benchmark, sincronía y filtro visual
 > están disponibles como flujos experimentales. Mirada ocular y evaluación integral de calidad siguen
-> pendientes.
+> pendientes, junto con validación geométrica para entrenamiento, carga de análisis guardados y
+> reanudación automática.
+
+## Integración experimental SMIRK
+
+Está disponible una preparación experimental de entrada en
+`talkingfacekit.integrations.smirk.iter_smirk_inputs`. Usa nuestro decoder por streaming y conserva
+los índices y timestamps del video fuente. Reproduce la configuración MediaPipe en modo imagen y
+el recorte de la demo SMIRK. Se puede inspeccionar esta preparación por separado del encoder.
+
+Con MediaPipe, scikit-image y un modelo local Face Landmarker preparados:
+
+```python
+from contextlib import closing
+
+from talkingfacekit import TalkingFaceSequence
+from talkingfacekit.integrations.smirk import SmirkMissingFrame, iter_smirk_inputs
+
+clip = TalkingFaceSequence.from_video("video.mp4").clip(20.0, 25.0)
+with closing(iter_smirk_inputs(clip, landmarker_model="models/face_landmarker.task")) as inputs:
+    for item in inputs:
+        if isinstance(item, SmirkMissingFrame):
+            print(item.frame_index, item.timestamp_seconds, item.reason)
+            continue
+        print(item.frame_index, item.timestamp_seconds, item.image.shape)
+```
+
+`image` es un array NumPy RGB `float32` con forma `(1, 3, 224, 224)` y valores entre 0 y 1, listo para
+convertir a tensor en la frontera del encoder. `source_to_crop` conserva la transformación
+de píxeles fuente al recorte. Si MediaPipe no devuelve landmarks, el iterador entrega un
+`SmirkMissingFrame` con índice, timestamp y motivo `face_landmarks_unavailable`, y continúa.
+La ausencia no distingue qué etapa interna de MediaPipe falló ni declara inválida la imagen para
+otros estimadores. `closing` libera los recursos incluso si se interrumpe el bucle.
+
+El extra `tracking-smirk` incluye MediaPipe, scikit-image, PyTorch, torchvision y timm:
+
+```bash
+uv sync --extra tracking-smirk --inexact
+```
+
+Las dependencias y modelos no se descargan al importar el módulo ni al construir el encoder.
+Preparar explícitamente el [checkpoint oficial SMIRK_em1](https://drive.google.com/file/d/1T65uEd9dVLHgVw5KiUYL66NUee-MCzoE/view)
+en `models/smirk/SMIRK_em1.pt` y el Face Landmarker en `models/face_landmarker.task`.
+El SHA-256 del checkpoint oficial usado en la prueba local es
+`26b234e3cc31a5de226bcba4321bb5d7343a2ad48234c028b57a1c2f8c2d22d0`.
+
+Para estimar parámetros sobre un intervalo, reutilizando un encoder cargado una sola vez:
+
+```python
+from contextlib import closing
+
+from talkingfacekit import TalkingFaceSequence
+from talkingfacekit.integrations.smirk import SmirkEncoder, SmirkMissingFrame
+
+clip = TalkingFaceSequence.from_video("data/eval/videos/Piers_Sellers_JSC_2016_interview.mp4").clip(
+    20.0, 25.0
+)
+encoder = SmirkEncoder("models/smirk/SMIRK_em1.pt", device="cpu")
+
+with closing(encoder.track(clip, landmarker_model="models/face_landmarker.task")) as predictions:
+    for result in predictions:
+        print(result.frame_index, result.timestamp_seconds)
+        if isinstance(result, SmirkMissingFrame):
+            print("Sin estimación:", result.reason)
+            continue
+        print(result.parameters.shape.shape)  # (300,)
+        print(result.parameters.expression.shape)  # (50,)
+        print(result.parameters.jaw_pose)  # axis-angle, radians
+```
+
+`FlameParameters`, en `talkingfacekit.flame`, contiene parámetros NumPy independientes del framework:
+variante FLAME, forma, expresión y pose de cabeza/mandíbula. `SmirkParameterFrame` agrega identidad
+del frame, párpados específicos de SMIRK, cámara ortográfica del recorte, transformación de imagen y
+hash del checkpoint. Los ojos y el cuello no se reportan como estimados. Las salidas son crudas por
+imagen, sin suavizado ni agregación de identidad; valores finitos no garantizan exactitud facial.
+
+La carga usa `weights_only=True`, exige el estado completo del encoder y evita descargas adicionales
+de ImageNet. El código adaptado conserva los nombres y operaciones del encoder oficial. CPU es la
+referencia comprobada; `mps` y `cuda` son selecciones explícitas cuya compatibilidad queda por validar.
+La geometría se evalúa por separado; todavía no hay método `reconstruct()` en la API de secuencias.
+`track` devuelve un `SmirkParameterFrame` o un `SmirkMissingFrame` por cada frame
+decodificado del intervalo. Cuando faltan landmarks, no ejecuta el encoder ni inventa parámetros;
+continúa con el siguiente frame conservando los tiempos originales. Los errores de configuración,
+decoder, detector, geometría del recorte o encoder se propagan.
+
+Esta extracción no interpola huecos, modifica segmentos ni decide qué ventanas sirven para entrenar.
+Un intervalo con todos sus frames sin detección devuelve todos sus registros de ausencia, sin
+predicciones; quien consuma el resultado debe comprobar cuántas estimaciones obtuvo.
+
+### Guardar y recuperar un intervalo FLAME
+
+`extract` reúne las salidas compactas del intervalo en un `FlameResult` independiente del tracker.
+Reutiliza `track` y el encoder cargado; no conserva imágenes ni tensores:
+
+```python
+from talkingfacekit.flame import FlameResult
+
+result = encoder.extract(clip, landmarker_model="models/face_landmarker.task")
+result.save("reports/smirk/piers-20-25.npz")
+
+# No necesita el encoder, los modelos ni el video original.
+loaded = FlameResult.load("reports/smirk/piers-20-25.npz")
+print(loaded.frame_count, loaded.estimated_count)
+print(loaded.shape.shape, loaded.expression.shape)  # (N, 300), (N, 50) para SMIRK
+print(loaded.frame_indices[~loaded.estimated])
+print(loaded.extras["smirk_camera"].shape)  # (N, 3)
+```
+
+El resultado conserva fuente y metadata, intervalo, hash del video, índices `int64`, PTS `float64`,
+parámetros `float32`, máscara `estimated` y motivos de ausencia. Las filas sin estimación contienen
+solo `NaN`, incluidos los datos adicionales; son marcadores de ausencia, no parámetros estimados.
+La máscara indica disponibilidad, no calidad facial o aptitud para entrenamiento.
+
+`extras` conserva `smirk_camera`, `smirk_eyelids` y `smirk_source_to_crop`, con sus significados en
+`extra_conventions`. `provenance` registra backend, hashes de checkpoint y Face Landmarker,
+revisión upstream, versiones de paquetes, dispositivo y configuración de preparación.
+El video se lee para calcular SHA-256 durante `extract`, además de su decodificación; guardar y
+cargar no vuelven a abrir los assets. La ruta fuente se registra absoluta, sin copiar el video.
+
+El NPZ comprimido usa un esquema versionado, arrays numéricos y metadata JSON, sin pickle. La carga
+valida dimensiones, dtypes, línea temporal y consistencia de las ausencias. El guardado crea los
+directorios padre y completa el archivo antes de publicarlo. Para reemplazar un resultado existente
+hay que pasar `overwrite=True`. Esta operación materializa los parámetros del intervalo completo;
+para consumir resultados frame a frame sigue disponible `track`.
+
+El [ejemplo ejecutable](examples/smirk_parameters.py) imprime parámetros, ausencias y un recuento final:
+
+```bash
+uv run --no-sync python examples/smirk_parameters.py \
+  data/eval/videos/Piers_Sellers_JSC_2016_interview.mp4 --start 20 --end 25
+```
+
+Para guardar el intervalo con el mismo ejemplo, agregar
+`--output reports/smirk/piers-20-25.npz`; `--overwrite` habilita su reemplazo explícito.
+
+La prueba con modelos reales es opt-in y usa archivos locales, sin descargas:
+
+```bash
+TALKINGFACEKIT_SMIRK_CHECKPOINT=models/smirk/SMIRK_em1.pt \
+TALKINGFACEKIT_SMIRK_LANDMARKER=models/face_landmarker.task \
+TALKINGFACEKIT_SMIRK_VIDEO=data/eval/videos/Piers_Sellers_JSC_2016_interview.mp4 \
+uv run --no-sync pytest tests/test_smirk_e2e.py -q
+```
+
+`TALKINGFACEKIT_SMIRK_DURATION_SECONDS=5` extiende la prueba de persistencia a cinco segundos;
+la prueba del iterador por frame conserva su ventana corta de 0.1 s.
+
+### Generar meshes FLAME2020 desde parámetros guardados
+
+`FlameDecoder` carga el modelo local una vez y convierte un `FlameResult` en el `FaceMeshTrack`
+existente. Funciona con NumPy en CPU, sin SMIRK, MediaPipe, Chumpy, SciPy ni PyTorch en ejecución:
+
+```python
+from talkingfacekit.flame import FlameResult
+from talkingfacekit.integrations.flame import FlameDecoder
+from talkingfacekit.rendering import render_face_mesh_html
+
+result = FlameResult.load("reports/smirk/piers-20-25.npz")
+decoder = FlameDecoder(
+    "models/flame2020/generic_model.pkl",
+    smirk_eyelids="models/smirk",
+)
+mesh = decoder.decode(result)
+render_face_mesh_html(mesh, "reports/smirk/flame-mesh.html")
+```
+
+Preparar `generic_model.pkl` de la descarga oficial **FLAME2020**. Para los resultados SMIRK también
+se necesitan `l_eyelid.npy` y `r_eyelid.npy` de la revisión upstream usada; se colocan localmente en
+el directorio indicado por `smirk_eyelids`. En este workspace ya están preparados. Los assets no se
+descargan ni distribuyen con la biblioteca. Usar el modelo genérico correcto: la estructura del
+pickle no demuestra por sí sola su año o variante. La lectura reconoce el almacenamiento numérico
+antiguo de Chumpy/CSC, sin ejecutar esos paquetes; los archivos deben venir de una fuente confiable.
+
+El decoder acepta la base `flame-2020-generic`, hasta 300 coeficientes de forma y las expresiones
+disponibles en el modelo. Conserva shape por frame, expresión y pose de cabeza/mandíbula; cuello y
+rotación ocular se fijan neutrales explícitamente. Aplica los offsets de párpados SMIRK después de
+la articulación, igual que la referencia. Omitir sus assets produce un error explícito. La cámara
+del recorte y su transformación se conservan en los parámetros, sin alterar el mesh 3D.
+
+La salida mantiene unidades/ejes nativos del asset, índices, PTS y máscara. Los frames sin estimación
+contienen solo `NaN`. No hay cambios de versión, interpolación, suavizado o agregación de identidad.
+`batch_size=32` limita los temporales numéricos; el mesh completo sí se materializa. Los hashes de
+los assets y las suposiciones están en `decoder.provenance`; la topología identifica el modelo por
+su hash. Este primer decoder no ofrece gradientes ni ejecución GPU.
+
+Con el extra de rendering ya instalado, el ejemplo genera un HTML offline con controles de cámara
+y reproducción. No vuelve a abrir el video ni ejecutar el encoder:
+
+```bash
+uv run --no-sync python examples/flame_mesh.py reports/smirk/piers-20-25.npz
+```
+
+El visor Plotly existente conserva los timestamps en los controles, pero reproduce con una duración
+mediana por frame. Sirve para inspección geométrica breve; todavía no es una superposición con el
+video ni una comprobación de sincronía A/V. El HTML materializa todos los frames y puede ser grande.
+
+Para mostrar el video original junto al mesh, el mismo renderer acepta `source_video`:
+
+```python
+render_face_mesh_html(
+    mesh,
+    "reports/smirk/flame-comparison.html",
+    source_video=result.source.path,
+)
+```
+
+Este modo usa el reloj del video y los PTS del resultado para actualizar el mesh. Tiene reproducción,
+pausa, una barra por frames y botones anterior/siguiente; las ausencias ocultan la superficie. Usa
+`requestVideoFrameCallback` cuando el navegador lo ofrece, y su tiempo de reproducción como fallback.
+No utiliza el FPS nominal ni el reloj de animación del visor 3D independiente. El render puede
+demorarse si el navegador está ocupado: pausar y avanzar por frames permite inspección puntual.
+
+La página referencia el video local sin copiarlo. Si el navegador no lo carga o se movió el archivo,
+el botón **Elegir video local** permite seleccionar el mismo original sin subirlo a un servidor.
+Por defecto se asume que tiempo del navegador y PTS fuente coinciden. Para un desplazamiento
+conocido, `video_time_offset_seconds` declara la relación `PTS fuente = tiempo del video + offset`;
+no se infiere ni corrige sincronía automáticamente. Los controles propios recorren desde el primer
+PTS hasta el último del mesh. Esto compara lado a lado, sin proyectar geometría sobre el video.
+
+En esta comparación se guardan los vértices como float32 binario y una sola conectividad, además
+de Plotly embebido. Todos los frames siguen materializados, pero se evita duplicar triángulos y
+serializar cada coordenada como texto por frame. Con el ejemplo:
+
+```bash
+uv run --no-sync python examples/flame_mesh.py reports/smirk/piers-20-25.npz \
+  --with-video --output reports/smirk/flame-comparison.html
+```
+
+La prueba con assets locales es opt-in:
+
+```bash
+TALKINGFACEKIT_FLAME_MODEL=models/flame2020/generic_model.pkl \
+TALKINGFACEKIT_FLAME_RESULT=reports/smirk/piers-20-25.npz \
+TALKINGFACEKIT_FLAME_SMIRK_EYELIDS=models/smirk \
+uv run --no-sync pytest tests/test_flame_e2e.py -q
+```
+
+Ver alcance, evidencia y pendientes en la [nota de integración](docs/research/flame_integration.md).
 
 ## Preprocesar desde Python
 

@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__TFK_TITLE__</title>
+<style>
+  :root { color-scheme:dark; font-family:system-ui,sans-serif; background:#11151c; color:#e8edf4; }
+  body { margin:0 auto; max-width:1600px; padding:24px; }
+  h1 { font-size:24px; margin:0 0 8px; } p { color:#aebed0; }
+  .panels { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  .panel { background:#171e29; border:1px solid #2b384a; border-radius:12px; overflow:hidden; }
+  h2 { margin:14px 16px; font-size:16px; }
+  video { display:block; width:100%; height:460px; background:#070a0f; object-fit:contain; }
+  #mesh { width:100%; height:460px; } .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:18px 0; }
+  button,.file-label { background:#25374d; color:#e8edf4; padding:10px 14px; border:1px solid #49617e; border-radius:7px; cursor:pointer; font:inherit; }
+  button:disabled { opacity:.45; cursor:default; } input[type=range] { flex:1; min-width:180px; }
+  #status { font-weight:600; min-height:24px; } #status.missing { color:#ffcc7b; }
+  #error { color:#ffb8b8; } #local-video { display:none; } .note { font-size:13px; line-height:1.6; }
+  @media(max-width:850px) { .panels { grid-template-columns:1fr; } video,#mesh { height:360px; } body { padding:14px; } }
+</style>
+</head>
+<body>
+<h1>__TFK_TITLE__</h1>
+<p id="range"></p>
+<div class="panels">
+  <section class="panel"><h2>Video original</h2><video id="video" controls preload="metadata" playsinline></video></section>
+  <section class="panel"><h2>Mesh 3D · arrastrá para girar</h2><div id="mesh"></div></section>
+</div>
+<div class="controls">
+  <button id="previous" disabled>← Frame</button><button id="play" disabled>Reproducir</button>
+  <button id="next" disabled>Frame →</button><input id="timeline" type="range" min="0" step="1" value="0" disabled aria-label="Frame del segmento">
+</div>
+<div id="status" aria-live="polite">Cargando comparación…</div><div id="clock"></div>
+<p id="error" role="alert"></p>
+<p class="note">El video controla la reproducción. Los huecos de estimación se muestran sin mesh.
+La vista 3D puede tardar en actualizarse si el navegador está ocupado; pausá y avanzá por frames para inspeccionar.
+Esta comparación no superpone la geometría sobre la imagen.</p>
+<p class="note">Si el navegador no carga el video, elegí el mismo archivo original:
+<label class="file-label" for="local-video">Elegir video local</label><input id="local-video" type="file" accept="video/*"></p>
+<script id="mesh-data" type="application/json">__TFK_DATA__</script>
+<script>__TFK_PLOTLY__</script>
+<script id="mesh-controller">
+"use strict";
+(() => {
+  const data = JSON.parse(document.getElementById("mesh-data").textContent);
+  const video = document.getElementById("video"), plot = document.getElementById("mesh");
+  const status = document.getElementById("status"), clock = document.getElementById("clock");
+  const error = document.getElementById("error"), slider = document.getElementById("timeline");
+  const previous = document.getElementById("previous"), next = document.getElementById("next"), play = document.getElementById("play");
+  const first = data.times[0], last = data.times[data.times.length - 1], epsilon = 1e-6;
+  const raw = atob(data.vertices), bytes = Uint8Array.from(raw, char => char.charCodeAt(0));
+  const vertices = new Float32Array(bytes.length / 4), view = new DataView(bytes.buffer);
+  for (let index = 0; index < vertices.length; index++) vertices[index] = view.getFloat32(index * 4, true);
+  slider.max = data.times.length - 1;
+  document.getElementById("range").textContent = `${data.videoName} · ${first.toFixed(3)}–${last.toFixed(3)} s · ${data.times.length} frames`;
+  let plotReady = false, rendered = null, pending = null, updating = false, objectUrl = null;
+  const hasFrameCallback = typeof video.requestVideoFrameCallback === "function";
+
+  function frameAt(sourceTime) {
+    if (sourceTime < first - epsilon || sourceTime > last + epsilon) return -1;
+    let low = 0, high = data.times.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (data.times[middle] <= sourceTime + epsilon) low = middle + 1; else high = middle;
+    }
+    return Math.max(0, low - 1);
+  }
+
+  async function updateMesh(index) {
+    pending = index;
+    if (updating || !plotReady) return;
+    updating = true;
+    try {
+      while (pending !== null) {
+        const row = pending; pending = null;
+        if (row === rendered) continue;
+        if (row < 0 || !data.detected[row]) {
+          await Plotly.restyle(plot, {visible:[false]}, [0]);
+        } else {
+          const x = new Float32Array(data.vertexCount), y = new Float32Array(data.vertexCount), z = new Float32Array(data.vertexCount);
+          const start = row * data.vertexCount * 3;
+          for (let vertex = 0; vertex < data.vertexCount; vertex++) {
+            x[vertex] = vertices[start + vertex * 3]; y[vertex] = vertices[start + vertex * 3 + 1];
+            z[vertex] = vertices[start + vertex * 3 + 2] * data.depthScale;
+          }
+          await Plotly.restyle(plot, {x:[x], y:[y], z:[z], visible:[true]}, [0]);
+        }
+        rendered = row;
+        status.className = row < 0 || !data.detected[row] ? "missing" : "";
+        status.textContent = row < 0 ? "Fuera del intervalo con geometría" : `Frame ${data.indices[row]} · ${data.times[row].toFixed(6)} s · ${data.detected[row] ? "Mesh disponible" : "Sin estimación facial"}`;
+      }
+    } catch (failure) {
+      error.textContent = `No se pudo actualizar el mesh: ${failure.message}`;
+    } finally { updating = false; }
+  }
+
+  function showTime(mediaTime) {
+    const sourceTime = mediaTime + data.videoOffset;
+    clock.textContent = `Tiempo fuente del video: ${sourceTime.toFixed(6)} s`;
+    const index = frameAt(sourceTime);
+    if (index >= 0) slider.value = index;
+    void updateMesh(index);
+    if (!video.paused && sourceTime > last + epsilon) {
+      video.pause(); video.currentTime = last - data.videoOffset;
+    }
+  }
+
+  function seek(index) {
+    video.pause();
+    const row = Math.max(0, Math.min(data.times.length - 1, index));
+    const target = data.times[row] - data.videoOffset;
+    if (Math.abs(video.currentTime - target) < epsilon) showTime(video.currentTime);
+    else video.currentTime = target;
+  }
+  function initialize() {
+    if (!plotReady || video.readyState < 1) return;
+    if (Number.isFinite(video.duration) && first - data.videoOffset > video.duration) {
+      error.textContent = "El video elegido no alcanza el intervalo de la comparación."; return;
+    }
+    error.textContent = "";
+    for (const control of [previous, next, play, slider]) control.disabled = false;
+    seek(0);
+  }
+  previous.addEventListener("click", () => seek(Math.max(0, frameAt(video.currentTime + data.videoOffset)) - 1));
+  next.addEventListener("click", () => seek(Math.max(0, frameAt(video.currentTime + data.videoOffset)) + 1));
+  slider.addEventListener("input", () => seek(Number(slider.value)));
+  play.addEventListener("click", async () => {
+    if (!video.paused) { video.pause(); return; }
+    const sourceTime = video.currentTime + data.videoOffset;
+    if (sourceTime >= last - epsilon || sourceTime < first - epsilon) video.currentTime = first - data.videoOffset;
+    try { await video.play(); } catch (failure) { error.textContent = `No se pudo reproducir el video: ${failure.message}`; }
+  });
+  video.addEventListener("play", () => { play.textContent = "Pausar"; });
+  video.addEventListener("pause", () => { play.textContent = "Reproducir"; });
+  video.addEventListener("loadedmetadata", initialize);
+  video.addEventListener("seeked", () => showTime(video.currentTime));
+  video.addEventListener("timeupdate", () => { if (!hasFrameCallback || video.paused) showTime(video.currentTime); });
+  video.addEventListener("error", () => { error.textContent = "No se pudo cargar el video. Podés elegir el archivo original con el botón de abajo."; });
+  document.getElementById("local-video").addEventListener("change", event => {
+    const file = event.target.files[0]; if (!file) return;
+    video.pause(); if (objectUrl) URL.revokeObjectURL(objectUrl);
+    objectUrl = URL.createObjectURL(file); video.src = objectUrl; video.load();
+  });
+  if (hasFrameCallback) {
+    const onFrame = (_now, metadata) => { showTime(metadata.mediaTime); video.requestVideoFrameCallback(onFrame); };
+    video.requestVideoFrameCallback(onFrame);
+  } else {
+    const onAnimationFrame = () => { if (!video.paused) showTime(video.currentTime); requestAnimationFrame(onAnimationFrame); };
+    requestAnimationFrame(onAnimationFrame);
+  }
+  video.src = data.videoUrl;
+  Plotly.newPlot(plot, [data.trace], data.layout, {displaylogo:false, responsive:true, scrollZoom:true})
+    .then(() => { plotReady = true; initialize(); })
+    .catch(failure => { error.textContent = `No se pudo iniciar la vista 3D: ${failure.message}`; });
+})();
+</script>
+</body>
+</html>

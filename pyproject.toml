@@ -26,6 +26,13 @@ tracking-mediapipe = [
 rendering = [
     "plotly>=6.9.0",
 ]
+tracking-smirk = [
+    "mediapipe>=1.0.0",
+    "scikit-image==0.22.0",
+    "timm==0.9.16",
+    "torch>=2.2,<3",
+    "torchvision>=0.17,<1",
+]
 
 [build-system]
 requires = ["uv_build>=0.11.8,<0.12.0"]

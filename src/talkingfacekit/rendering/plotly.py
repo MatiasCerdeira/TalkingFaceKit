@@ -37,6 +37,8 @@ def render_face_mesh_html(
     title: str = "TalkingFaceKit animated face mesh",
     depth_scale: float = 1.0,
     overwrite: bool = False,
+    source_video: str | Path | None = None,
+    video_time_offset_seconds: float = 0.0,
 ) -> Path:
     """Render an animated face-mesh timeline to a self-contained interactive HTML file.
 
@@ -62,6 +64,12 @@ def render_face_mesh_html(
         Positive finite display-only multiplier for the z axis. It does not alter the mesh object.
     overwrite
         Whether an existing regular file may be replaced after rendering completes.
+    source_video
+        Optional original video to show beside the mesh. The file is referenced, not copied.
+        Playback follows video presentation times instead of Plotly's animation clock.
+    video_time_offset_seconds
+        Explicit mapping for comparison: source PTS = browser media time + this offset.
+        Zero assumes matching timelines. No offset is inferred or applied to saved geometry.
 
     Returns
     -------
@@ -88,6 +96,22 @@ def render_face_mesh_html(
         raise ValueError(f"depth_scale must be finite and positive, got {depth_scale}")
     if not np.any(mesh.detected):
         raise ValueError("face mesh renderer requires at least one detected frame")
+    if isinstance(video_time_offset_seconds, bool) or not math.isfinite(video_time_offset_seconds):
+        raise ValueError("video_time_offset_seconds must be finite")
+    if source_video is not None:
+        from talkingfacekit.rendering._video_mesh import render_video_mesh_html
+
+        return render_video_mesh_html(
+            mesh,
+            path,
+            source_video=Path(source_video),
+            title=title,
+            depth_scale=depth_scale,
+            overwrite=overwrite,
+            video_time_offset_seconds=video_time_offset_seconds,
+        )
+    if video_time_offset_seconds != 0:
+        raise ValueError("video_time_offset_seconds requires source_video")
 
     figure = _build_figure(mesh, title=title, depth_scale=depth_scale)
     plotly_io = _load_plotly_io()
