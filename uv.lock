@@ -569,7 +569,7 @@ wheels = [
 
 [[package]]
 name = "inspireface"
-version = "1.2.3.post5"
+version = "1.2.4.post3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filelock" },
@@ -578,14 +578,11 @@ dependencies = [
     { name = "numpy" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/96/7c/7689044901948a128eb7bc4bf22b8bf2ed6edf8cd32da0ae7b69e1706a2c/inspireface-1.2.3.post5-cp311-cp311-macosx_13_0_universal2.whl", hash = "sha256:ea92807fe1116bd0c9d37df6a4c658b273eed68ec1662b62a81acc17d62fdfcb", size = 2499224, upload-time = "2025-08-01T08:09:40.911Z" },
-    { url = "https://files.pythonhosted.org/packages/69/76/4e8b6b38f6bdef5286d5e4d3c9f0d7e4e2deb1a0f0f3c8135110e2a0aebd/inspireface-1.2.3.post5-cp311-cp311-macosx_14_0_universal2.whl", hash = "sha256:8b4bbac6ca714db2eb55303b8a137e777c3aba672da4d6599cbda916699445c5", size = 2052283, upload-time = "2025-08-01T08:09:50.527Z" },
-    { url = "https://files.pythonhosted.org/packages/83/9a/54d17a7e4f8e9349b75abe38f8ea591eec007d9a0640f7852cefb20c161b/inspireface-1.2.3.post5-cp311-cp311-manylinux2014_aarch64.whl", hash = "sha256:0dea8096151570fa8f49149128aea473d438d6746d4a6a344656ef298dc30e79", size = 2707592, upload-time = "2025-08-01T08:10:04.803Z" },
-    { url = "https://files.pythonhosted.org/packages/2a/62/fac235a9584e6cab7eb73dbe88ada155fdf0fabaf9527b814ab7747972b9/inspireface-1.2.3.post5-cp311-cp311-manylinux2014_x86_64.whl", hash = "sha256:d480ef0790730eff606a5fbf42f9cc8ca0eb590ab108ebb2d534287314bdcf23", size = 2948799, upload-time = "2025-08-01T08:09:52.244Z" },
-    { url = "https://files.pythonhosted.org/packages/12/51/c52d7effe51ec6fe9d493d1a472b932da8a30cbb951da6f8e053ba6d86c3/inspireface-1.2.3.post5-cp312-cp312-macosx_13_0_universal2.whl", hash = "sha256:264656aae249c1d71b0cc8611e578188f0c53843f38f26902102b6ee68c6fd10", size = 2499277, upload-time = "2025-08-01T08:09:58.125Z" },
-    { url = "https://files.pythonhosted.org/packages/4c/c2/60e2a207ca126e48898ace9c291cd27c22b41d196b06a55e8e4af3030426/inspireface-1.2.3.post5-cp312-cp312-macosx_14_0_universal2.whl", hash = "sha256:de8e831d1dc2d71e6bcd20b4d359583a24fcbe042af44a473a160d54b182507a", size = 2052330, upload-time = "2025-08-01T08:10:01.523Z" },
-    { url = "https://files.pythonhosted.org/packages/43/5b/14ae8e4330f330f7c463765d912951074ebb04c43c1643a58979154c201f/inspireface-1.2.3.post5-cp312-cp312-manylinux2014_aarch64.whl", hash = "sha256:f144ad75227b81e3121cc6d2fa6ab7b24300cf1da8768bc3b4eec375aee34d8f", size = 2707591, upload-time = "2025-08-01T08:09:35.695Z" },
-    { url = "https://files.pythonhosted.org/packages/54/b2/61a513f4218df9f4f7ea3e24c86553e990250209b327a7a44088ae8cdc4a/inspireface-1.2.3.post5-cp312-cp312-manylinux2014_x86_64.whl", hash = "sha256:e533ed52b671f8a259794b504f4a906290a97b149bb856c4039b689f7a409f43", size = 2948801, upload-time = "2025-08-01T08:09:48.443Z" },
+    { url = "https://files.pythonhosted.org/packages/68/f4/91db3de3d26759666b2dc90503539f1884f5c96951e0adceb9457c4bddb2/inspireface-1.2.4.post3-py3-none-macosx_11_0_arm64.whl", hash = "sha256:edff1f5b7a86ccdc77566d341070b2597b0375140c49df7f73595394da36691b", size = 2311435, upload-time = "2026-10-02T17:57:10.934Z" },
+    { url = "https://files.pythonhosted.org/packages/bc/89/e7cb0a0754eca23a9e9fc4e2b6fa05e6c9dfcce2482a516b37a451b4fb24/inspireface-1.2.4.post3-py3-none-macosx_12_0_x86_64.whl", hash = "sha256:3e28d2c4345d884ef3c2e74ff293f5c239c1a1d80b0b3495dcf599d4a0111272", size = 2717486, upload-time = "2026-10-02T17:57:12.513Z" },
+    { url = "https://files.pythonhosted.org/packages/58/c2/9f4b5bf98ca743f520c1f620c269ed82a3db85d56c3db541ec86d4d9240c/inspireface-1.2.4.post3-py3-none-manylinux2014_aarch64.whl", hash = "sha256:86343a0b51fd62958a0b6f30e8ac568924bda9bdee7ea93520758d4530d814be", size = 3053825, upload-time = "2026-10-02T17:57:13.718Z" },
+    { url = "https://files.pythonhosted.org/packages/2c/9d/6f5d36812db4ed85b974053f3110eb3eb920a528b0d95d946647fee4f24a/inspireface-1.2.4.post3-py3-none-manylinux2014_x86_64.whl", hash = "sha256:198547a6e5b647396fabd5389acc0498c33ee4e3aa412199224bd685c0f4cd79", size = 3314485, upload-time = "2026-10-02T17:57:15.133Z" },
+    { url = "https://files.pythonhosted.org/packages/4d/77/23085149989718e4dc1c3b338e5f6a6e8b459b6a642effb141d12da156e3/inspireface-1.2.4.post3-py3-none-win_amd64.whl", hash = "sha256:c88b3464737005c4b4bde70e7dfdb68ca250d1777f6fe7dde4ab8179e8df6595", size = 2258736, upload-time = "2026-10-02T17:57:16.255Z" },
 ]
 
 [[package]]
