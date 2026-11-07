@@ -294,7 +294,8 @@ result = sequence.analyze(AnalysisConfig(visual_policy=VisualPolicy()))
 
 for segment in result.selected_segments:
     print(segment.start_seconds, segment.end_seconds, segment.reason_codes)
-    clip = segment.to_sequence()  # vista liviana; no copia ni recodifica el video
+    clip = segment.to_sequence()
+    clip.export_clip(f"clips/{segment.start_seconds:.3f}-{segment.end_seconds:.3f}.mp4")
 
 result.save("reports/conversation.json")
 result.render_report("reports/conversation.html")  # reutiliza la misma inferencia
@@ -307,6 +308,29 @@ los descartes preliminares de voz/rostros siguen en `active_speaker.preliminary_
 Los tiempos siempre corresponden al video original. La secuencia no se modifica y los resultados
 no contienen frames ni objetos de los frameworks. Sin configuración se ejecuta la selección
 estructural; el filtro visual y SyncNet son explícitos.
+
+`export_clip` requiere una secuencia con final definido, decodifica el intervalo semiabierto y
+recodifica video H.264 y, cuando existe, audio AAC mediante PyAV. El MP4 usa un origen común para
+ambas pistas: el tiempo de salida es el timestamp fuente menos `start_seconds`. El archivo de
+destino debe terminar en `.mp4`, no se sobrescribe por defecto y se publica sólo después de una
+codificación completa. Para varios segmentos alcanza con el bucle sobre `selected_segments`; no hay
+un segundo pipeline batch. SMIRK/FLAME puede seguir trabajando sobre `segment.to_sequence()` y sus
+timestamps fuente. Si se procesa en cambio el MP4 exportado, sus timestamps son relativos al clip
+y se convierten nuevamente a tiempo fuente sumando `segment.start_seconds`. La exportación conserva
+el sample aspect ratio; si el intervalo no contiene muestras de una pista de audio existente,
+produce un MP4 sólo con video. Los layouts PCM genéricos de uno o dos canales se representan como
+mono o estéreo para que AAC pueda codificarlos.
+
+Para una prueba manual reproducible sobre un video y modelos locales ya preparados:
+
+```bash
+DEEPTALK_ASD_OFFLINE=1 uv run python examples/export_selected_clips.py \
+  data/eval/videos/video.mp4 reports/exported-clips
+```
+
+El comando imprime `inicio-fin -> archivo` para comparar cada corte con el original. Agregar
+`--syncnet-model models/syncnet_v2.model` habilita la verificación opcional existente; `--overwrite`
+permite repetir deliberadamente la exportación. No descarga modelos ni datos desde el ejemplo.
 
 Para una carpeta, sin manifiestos ni anotaciones humanas:
 
@@ -344,7 +368,8 @@ después de cada archivo, incluidos los fallidos. Los resultados completados per
 si una corrida se interrumpe. Los nombres llevan un índice para evitar colisiones entre videos
 homónimos. Los archivos existentes requieren `overwrite=True`; no hay caché ni reanudación
 automática. El guardado lee la fuente para registrar SHA-256 y conserva el esquema JSON v1 de la CLI.
-`render_report` genera HTML que referencia el video original; no exporta clips físicos.
+`render_report` genera HTML que referencia el video original; no exporta clips físicos
+automáticamente.
 
 Todas las entradas usan el mismo `AnalysisConfig`. Para verificar sincronización, instalar también
 `synchronization-syncnet` y proporcionar `syncnet_model=Path("models/syncnet_v2.model")` con el
@@ -366,7 +391,8 @@ bandas humano/librería, precisión, recall y motivos. Con ambos extras y los mo
 `metrics` agrega por duración y `selected_segments` devuelve una tupla de `TalkingFaceSegment` lista
 para seguir trabajando. `save` guarda esos candidatos (fuente, inicio, fin, identidad y razones) y
 los datos de evaluación en JSON; `render_benchmark_report` es una vista opcional de ese archivo, sin
-inferencia adicional. No se exportan clips físicos. Las fuentes sin anotaciones aparecen en
+inferencia adicional. La evaluación no exporta clips físicos automáticamente. Las fuentes sin
+anotaciones aparecen en
 `unannotated_videos`, y las anotaciones fuera de la colección en `unmatched_annotation_files`;
 ninguna se cuenta como un caso negativo. `video_aliases` permite mapear nombres explícitamente sin
 editar etiquetas. Para un manifiesto aprobado se puede llamar directamente
@@ -436,7 +462,8 @@ cuando existe, debe ser finito y posterior al inicio.
 
 Un clip lógico reutiliza el mismo `VideoSource` sin decodificar ni copiar el video. Sus timestamps
 permanecen sobre la línea temporal original, comienza sin tracks adjuntos y expone la duración de
-su propio intervalo por separado de la duración informada por la fuente:
+su propio intervalo por separado de la duración informada por la fuente. La copia física sólo se
+crea al llamar explícitamente a `export_clip`:
 
 ```python
 sequence = TalkingFaceSequence.from_video("portrait.webm")
@@ -445,6 +472,7 @@ clip = sequence.clip(0.5, 1.5)
 print(clip.source is sequence.source)  # True
 print(clip.duration_seconds)  # 1.0
 print(clip.source.metadata.stream_duration_seconds)  # duración informada del video completo
+clip.export_clip("clips/portrait-0.5-1.5.mp4")
 ```
 
 La fuente y los límites de una secuencia no se pueden reasignar después de construirla. Una

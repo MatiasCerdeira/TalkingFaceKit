@@ -298,7 +298,7 @@ Preflight checks reject conflicting output names before inference; overwrite is 
 Order-prefixed names distinguish identical stems. Writing failures propagate without destroying
 previously completed files. This is persistence of progress, not automatic cache lookup or resume.
 `VideoAnalysisResult.render_report` renders existing in-memory evidence without model execution,
-referencing unchanged local media. Physical clip export and a typed JSON reload API remain deferred.
+referencing unchanged local media. A typed JSON reload API remains deferred.
 
 ### Evaluation data and the benchmark view
 
@@ -316,8 +316,9 @@ Unannotated sources and unmatched annotation filenames are recorded, excluded fr
 never interpreted as negative labels. Simple annotation inputs can explicitly map filenames with
 `video_aliases`; timestamps and labels remain unchanged. Approved hashed manifests cannot be
 remapped. Standalone evaluation without collection scope remains strict about missing media.
-Result persistence protects input media and annotation files/directories. No physical clip export,
-parallel execution, new model policy or new visualizer is introduced.
+Result persistence protects input media and annotation files/directories. Evaluation does not
+automatically export physical clips or introduce parallel execution, new model policy or a new
+visualizer.
 
 ## Dependency direction
 
@@ -442,6 +443,17 @@ does not copy attached result tracks. Its `duration_seconds` property describes 
 sequence interval; `source.metadata.stream_duration_seconds` remains metadata for the complete
 stream.
 
+`TalkingFaceSequence.export_clip(...)` is the explicit physical-media boundary for bounded
+sequences. It delegates to `io.clip`, which reuses the shared PyAV video and audio streams over the
+same half-open source interval. Both output tracks subtract the sequence start rather than rebasing
+independently, preserving their relative offset. Video is re-encoded as H.264 and optional audio as
+AAC in MP4; dimensions, average frame rate, audio sample rate and layout are retained where the
+encoders support them, including the source sample aspect ratio. Generic one- and two-channel PCM
+layouts are mapped to AAC mono and stereo. A source with no audio samples inside the selected
+interval produces a video-only MP4. The output is written beside its destination and atomically
+published only after both encoders flush. Existing destinations are refused unless replacement is
+explicit.
+
 A sequence created by `from_video` starts at zero and has `end_seconds=None`, meaning decode to
 end-of-stream. Reported stream/container duration is informational metadata, not an absolute source
 timestamp, so it is not used as the sequence end. This avoids truncating media whose first PTS is
@@ -471,6 +483,7 @@ src/talkingfacekit/
 ├── sequence.py       User-facing sequence aggregate
 ├── io/
 │   ├── audio.py      PyAV-based audio streaming boundary
+│   ├── clip.py       PyAV-based precise MP4 decode/re-encode boundary
 │   ├── landmarks.py  Versioned NPZ landmark persistence boundary
 │   └── video.py      PyAV-based video inspection and RGB streaming boundary
 └── tracking/
