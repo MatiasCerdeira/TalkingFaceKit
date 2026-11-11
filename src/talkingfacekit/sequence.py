@@ -167,6 +167,46 @@ class TalkingFaceSequence:
 
         return analyze_sequence(self, config)
 
+    def export_clip(self, output_path: str | Path, *, overwrite: bool = False) -> Path:
+        """Decode and re-encode this bounded interval as an MP4 clip.
+
+        The output timeline starts at this sequence's ``start_seconds`` for both video and optional
+        audio. Frames and samples are selected from the half-open source interval represented by
+        the sequence. Encoding is explicit; the source and attached results remain unchanged.
+
+        Parameters
+        ----------
+        output_path
+            Destination ending in ``.mp4``. Parent directories are created as needed.
+        overwrite
+            Whether an existing destination may be atomically replaced after encoding succeeds.
+
+        Returns
+        -------
+        pathlib.Path
+            Completed MP4 path.
+
+        Raises
+        ------
+        ValueError
+            If this sequence is open-ended, the destination is invalid, or media cannot be decoded
+            or encoded.
+        FileExistsError
+            If the destination exists and ``overwrite`` is false.
+        """
+        if self.end_seconds is None:
+            raise ValueError("clip export requires a bounded sequence with end_seconds")
+
+        from talkingfacekit.io.clip import export_clip
+
+        return export_clip(
+            self.source,
+            output_path,
+            start_seconds=self.start_seconds,
+            end_seconds=self.end_seconds,
+            overwrite=overwrite,
+        )
+
     @property
     def duration_seconds(self) -> float | None:
         """Duration of this sequence's declared interval in seconds.
