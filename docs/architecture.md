@@ -456,6 +456,18 @@ the selected interval produces a video-only MP4. The output is written beside it
 atomically published only after both encoders flush. Existing destinations are refused unless
 replacement is explicit.
 
+`dataset.export_segments(...)` composes existing operations for selected segments; it adds no
+backend abstraction. Facial estimation receives `segment.to_sequence()`, so parameters keep source
+PTS and the original video's hash and avoid a second lossy encode; the clip and parameters cover the
+same decoded frames. The estimator is a plain `Callable[[TalkingFaceSequence], FlameResult]`, which
+lets a future sequence reconstruction facade replace `SmirkEncoder.extract` without changing the
+orchestration, and its result must match the segment's source and interval exactly. Each segment
+directory is complete only when `segment.json` exists; it is written last and records relative
+output paths plus `clip.source_time_offset_seconds` (source PTS = clip time + offset). A failed
+segment removes its own partial files and does not stop later segments; output conflicts fail before
+any segment is processed. Target-face consistency between DeepTalk and the estimator's own detector
+is not checked yet: selected segments already exclude multiple visible faces.
+
 A sequence created by `from_video` starts at zero and has `end_seconds=None`, meaning decode to
 end-of-stream. Reported stream/container duration is informational metadata, not an absolute source
 timestamp, so it is not used as the sequence end. This avoids truncating media whose first PTS is

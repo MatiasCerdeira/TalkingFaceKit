@@ -334,6 +334,41 @@ El comando imprime `inicio-fin -> archivo` para comparar cada corte con el origi
 `--syncnet-model models/syncnet_v2.model` habilita la verificación opcional existente; `--overwrite`
 permite repetir deliberadamente la exportación. No descarga modelos ni datos desde el ejemplo.
 
+### Exportar segmentos con sus parámetros FLAME
+
+`talkingfacekit.dataset.export_segments` vincula en una carpeta por segmento el clip, los
+parámetros y su metadata. Reutiliza `export_clip`, el extractor indicado y `FlameResult.save`:
+
+```python
+from talkingfacekit.dataset import export_segments
+from talkingfacekit.integrations.smirk import SmirkEncoder
+
+encoder = SmirkEncoder("models/smirk/SMIRK_em1.pt")  # se carga una sola vez
+exports = export_segments(
+    result.selected_segments,
+    "dataset/conversation",
+    extract_flame=lambda sequence: encoder.extract(
+        sequence, landmarker_model="models/face_landmarker.task"
+    ),
+)
+for item in exports:
+    print(item.directory, item.error)
+```
+
+Cada segmento produce `segment_001/clip.mp4`, `flame.npz` y, al final, `segment.json`. SMIRK se
+ejecuta sobre `segment.to_sequence()`, es decir sobre el video original y su timeline, no sobre el
+MP4 recodificado; ambos cubren los mismos frames decodificados. `segment.json` registra fuente y
+SHA-256, intervalo, `face_id`, estado, motivos, rutas relativas, cantidad de frames estimados y
+`clip.source_time_offset_seconds`: el tiempo `t` del clip corresponde al PTS fuente
+`t + source_time_offset_seconds`. Ese mismo valor es el `video_time_offset_seconds` del visor
+comparativo.
+
+Un error en un segmento queda en `item.error` (etapa, tipo y mensaje), se eliminan sus archivos
+parciales y continúan los siguientes. Si ya existe alguna salida, la llamada falla antes de
+procesar el primer segmento, salvo con `overwrite=True`. El resultado del extractor debe describir
+exactamente la misma fuente e intervalo. La identidad del rostro no se verifica en esta etapa:
+la selección ya rechaza intervalos con más de un rostro visible.
+
 Para una carpeta, sin manifiestos ni anotaciones humanas:
 
 ```python
