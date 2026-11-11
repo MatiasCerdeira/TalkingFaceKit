@@ -311,9 +311,11 @@ estructural; el filtro visual y SyncNet son explícitos.
 
 `export_clip` requiere una secuencia con final definido, decodifica el intervalo semiabierto y
 recodifica video H.264 y, cuando existe, audio AAC mediante PyAV. El MP4 usa un origen común para
-ambas pistas: el tiempo de salida es el timestamp fuente menos `start_seconds`. El archivo de
-destino debe terminar en `.mp4`, no se sobrescribe por defecto y se publica sólo después de una
-codificación completa. Para varios segmentos alcanza con el bucle sobre `selected_segments`; no hay
+ambas pistas: el tiempo de salida es el timestamp fuente menos `start_seconds`. Se conservan la
+rotación de visualización y el sample aspect ratio de la fuente. Como H.264 `yuv420p` exige
+dimensiones pares, un ancho o alto impar recibe una columna o fila replicada a la derecha o abajo,
+sin desplazar las coordenadas de los píxeles originales. El archivo de destino debe terminar en
+`.mp4`, no se sobrescribe por defecto y se publica sólo después de una codificación completa. Para varios segmentos alcanza con el bucle sobre `selected_segments`; no hay
 un segundo pipeline batch. SMIRK/FLAME puede seguir trabajando sobre `segment.to_sequence()` y sus
 timestamps fuente. Si se procesa en cambio el MP4 exportado, sus timestamps son relativos al clip
 y se convierten nuevamente a tiempo fuente sumando `segment.start_seconds`. La exportación conserva

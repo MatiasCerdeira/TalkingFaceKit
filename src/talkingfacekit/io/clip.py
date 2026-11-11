@@ -33,9 +33,11 @@ def export_clip(
     Video and optional audio use the sequence start as their shared output-time origin. Video frame
     timestamps and audio samples are selected from the half-open source interval
     ``[start_seconds, end_seconds)``. The first source video and audio streams are encoded as H.264
-    and AAC while preserving dimensions, sample aspect ratio, average frame rate, sample rate, and
-    channel layout when those values are available. An interval without audio samples produces a
-    video-only MP4.
+    and AAC while preserving dimensions, sample aspect ratio, display rotation, average frame rate,
+    sample rate, and channel layout when those values are available. Odd widths or heights gain one
+    edge-replicated column or row on the right or bottom because ``yuv420p`` requires even
+    dimensions; source pixel coordinates are unchanged. An interval without audio samples produces
+    a video-only MP4.
 
     Parameters
     ----------
@@ -112,6 +114,9 @@ def _encode_clip(
     try:
         with av.open(source.path) as source_container:
             sample_aspect_ratio = source_container.streams.video[0].sample_aspect_ratio
+            # Display rotation is stream-level side data that PyAV exposes on decoded frames.
+            first_source_frame = next(source_container.decode(video=0), None)
+            display_rotation = 0 if first_source_frame is None else first_source_frame.rotation
     except av.FFmpegError as error:
         raise ValueError(f"Could not inspect media file {source.path}: {error}") from error
     first_video_frame = next(video_frames)
@@ -138,6 +143,7 @@ def _encode_clip(
                 source,
                 first_video_frame,
                 sample_aspect_ratio=sample_aspect_ratio,
+                display_rotation=display_rotation,
             )
             audio_stream = (
                 _add_audio_stream(container, first_audio_chunk)
@@ -169,6 +175,7 @@ def _add_video_stream(
     first_frame: DecodedVideoFrame,
     *,
     sample_aspect_ratio: Fraction | None,
+    display_rotation: int,
 ) -> av.VideoStream:
     rate = (
         Fraction(source.metadata.average_fps).limit_denominator(100_000)
@@ -176,11 +183,15 @@ def _add_video_stream(
         else None
     )
     stream = container.add_stream("libx264", rate=rate)
-    stream.width = first_frame.rgb.shape[1]
-    stream.height = first_frame.rgb.shape[0]
+    height, width = first_frame.rgb.shape[:2]
+    # yuv420p requires even dimensions; odd sources gain one replicated row/column.
+    stream.width = width + width % 2
+    stream.height = height + height % 2
     stream.pix_fmt = "yuv420p"
     if sample_aspect_ratio is not None:
         stream.sample_aspect_ratio = sample_aspect_ratio
+    if display_rotation:
+        stream.set_display_rotation(display_rotation)
     stream.time_base = _VIDEO_TIME_BASE
     stream.codec_context.time_base = _VIDEO_TIME_BASE
     stream.codec_context.max_b_frames = 0
@@ -226,6 +237,10 @@ def _encode_streams(
                 next_video,
                 start_seconds=start_seconds,
                 previous_pts=previous_video_pts,
+                source_dimensions=(
+                    first_video_frame.rgb.shape[0],
+                    first_video_frame.rgb.shape[1],
+                ),
             )
             next_video = next(video_frames, None)
         else:
@@ -248,13 +263,16 @@ def _encode_video_frame(
     *,
     start_seconds: float,
     previous_pts: int | None,
+    source_dimensions: tuple[int, int],
 ) -> int:
-    if frame.rgb.shape[:2] != (stream.height, stream.width):
+    height, width = frame.rgb.shape[:2]
+    if (height, width) != source_dimensions:
         raise ValueError(
             "decoded video dimensions changed during clip export: "
-            f"expected {(stream.height, stream.width)}, got {frame.rgb.shape[:2]}"
+            f"expected {source_dimensions}, got {(height, width)}"
         )
-    output_frame = av.VideoFrame.from_ndarray(frame.rgb, format="rgb24")
+    pixels = np.pad(frame.rgb, ((0, height % 2), (0, width % 2), (0, 0)), mode="edge")
+    output_frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
     output_frame.time_base = _VIDEO_TIME_BASE
     output_frame.pts = round((frame.timestamp_seconds - start_seconds) / float(_VIDEO_TIME_BASE))
     if output_frame.pts < 0 or (previous_pts is not None and output_frame.pts <= previous_pts):

@@ -1,12 +1,13 @@
 from fractions import Fraction
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import av
 import numpy as np
 import pytest
 from numpy.typing import NDArray
 
+import talkingfacekit.io.clip as clip_io
 from talkingfacekit import TalkingFaceSequence, stream_audio_chunks, stream_video_frames
 
 _FRAME_RATE = 10
@@ -221,6 +222,45 @@ def test_preserves_source_sample_aspect_ratio(tmp_path: Path) -> None:
         assert stream.sample_aspect_ratio == sample_aspect_ratio
 
 
+def test_pads_odd_dimensions_without_moving_source_pixels(tmp_path: Path) -> None:
+    source = tmp_path / "odd.mkv"
+    output = tmp_path / "odd.mp4"
+    _write_synthetic_source(source, with_audio=False, width=33, height=25)
+
+    TalkingFaceSequence.from_video(source).clip(0.0, 0.3).export_clip(output)
+
+    exported = list(stream_video_frames(output))
+    assert len(exported) == 3
+    assert exported[0].rgb.shape == (26, 34, 3)
+    original = next(iter(stream_video_frames(source)))
+    assert np.abs(exported[0].rgb[:25, :33].astype(int) - original.rgb.astype(int)).max() <= 3
+
+
+def test_preserves_source_display_rotation(tmp_path: Path) -> None:
+    unrotated = tmp_path / "unrotated.mkv"
+    source = tmp_path / "rotated.mp4"
+    output = tmp_path / "clip.mp4"
+    _write_synthetic_source(unrotated, with_audio=False, video_codec="mpeg4")
+    with av.open(unrotated) as input_container, av.open(source, mode="w") as output_container:
+        input_stream = input_container.streams.video[0]
+        output_stream = output_container.add_stream_from_template(input_stream)
+        output_stream.set_display_rotation(90)
+        for packet in input_container.demux(input_stream):
+            if packet.dts is not None:
+                packet.stream = output_stream
+                output_container.mux(packet)
+
+    with av.open(source) as container:
+        assert next(container.decode(video=0)).rotation == 90
+
+    TalkingFaceSequence.from_video(source).clip(0.0, 0.3).export_clip(output)
+
+    with av.open(output) as container:
+        frame = next(container.decode(video=0))
+        assert frame.rotation == 90
+        assert (frame.width, frame.height) == (32, 24)
+
+
 def test_exports_multiple_sequences_with_a_plain_loop(tmp_path: Path) -> None:
     source = tmp_path / "source.mkv"
     _write_synthetic_source(source, with_audio=False)
@@ -261,13 +301,26 @@ def test_rejects_unbounded_non_mp4_and_source_destinations(tmp_path: Path) -> No
         sequence.clip(0.0, 0.2).export_clip(source)
 
 
-def test_removes_partial_output_when_encoding_fails(tmp_path: Path) -> None:
-    source = tmp_path / "odd-dimensions.mkv"
+def test_removes_partial_output_when_encoding_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.mkv"
     output = tmp_path / "clip.mp4"
-    _write_synthetic_source(source, with_audio=False, width=31, height=23)
+    _write_synthetic_source(source, with_audio=False)
+    encode_frame = clip_io._encode_video_frame
+    calls = 0
 
-    with pytest.raises(ValueError, match="Could not encode MP4 clip"):
-        TalkingFaceSequence.from_video(source).clip(0.0, 0.2).export_clip(output)
+    def fail_after_first_frame(*args: Any, **kwargs: Any) -> int:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise RuntimeError("simulated encoder failure")
+        return encode_frame(*args, **kwargs)
+
+    monkeypatch.setattr(clip_io, "_encode_video_frame", fail_after_first_frame)
+
+    with pytest.raises(RuntimeError, match="simulated encoder failure"):
+        TalkingFaceSequence.from_video(source).clip(0.0, 0.3).export_clip(output)
 
     assert not output.exists()
     assert not list(tmp_path.glob(".clip.mp4.*.tmp.mp4"))

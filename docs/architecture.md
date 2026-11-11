@@ -448,11 +448,13 @@ sequences. It delegates to `io.clip`, which reuses the shared PyAV video and aud
 same half-open source interval. Both output tracks subtract the sequence start rather than rebasing
 independently, preserving their relative offset. Video is re-encoded as H.264 and optional audio as
 AAC in MP4; dimensions, average frame rate, audio sample rate and layout are retained where the
-encoders support them, including the source sample aspect ratio. Generic one- and two-channel PCM
-layouts are mapped to AAC mono and stereo. A source with no audio samples inside the selected
-interval produces a video-only MP4. The output is written beside its destination and atomically
-published only after both encoders flush. Existing destinations are refused unless replacement is
-explicit.
+encoders support them, including the source sample aspect ratio and display rotation. Because
+H.264 `yuv420p` requires even dimensions, an odd source width or height gains one replicated
+column or row on the right or bottom; source pixel coordinates are unchanged. Generic one- and
+two-channel PCM layouts are mapped to AAC mono and stereo. A source with no audio samples inside
+the selected interval produces a video-only MP4. The output is written beside its destination and
+atomically published only after both encoders flush. Existing destinations are refused unless
+replacement is explicit.
 
 A sequence created by `from_video` starts at zero and has `end_seconds=None`, meaning decode to
 end-of-stream. Reported stream/container duration is informational metadata, not an absolute source
