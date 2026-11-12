@@ -369,6 +369,34 @@ procesar el primer segmento, salvo con `overwrite=True`. El resultado del extrac
 exactamente la misma fuente e intervalo. La identidad del rostro no se verifica en esta etapa:
 la selección ya rechaza intervalos con más de un rostro visible.
 
+El [ejemplo ejecutable](examples/build_dataset.py) recorre un video completo: carga SMIRK, analiza
+con el filtro visual, exporta los segmentos e imprime frames estimados o el error de cada uno.
+`--render` agrega `comparison.html` por segmento, con la malla FLAME2020 junto a su clip y el
+offset temporal ya aplicado. Requiere los extras `active-speaker-deeptalk`, `tracking-smirk` y,
+para `--render`, `rendering`, además de los modelos locales:
+
+```bash
+DEEPTALK_ASD_OFFLINE=1 uv run python examples/build_dataset.py \
+  data/eval/videos/video.mp4 reports/dataset/video --render
+```
+
+`--start` y `--end` limitan el análisis a un intervalo de la fuente; `--syncnet-model` habilita la
+verificación A/V opcional. La salida debe estar vacía salvo con `--overwrite`; si una corrida
+anterior dejó más carpetas de segmentos, el ejemplo las informa sin borrarlas.
+
+La prueba con modelos reales es opt-in y exige que el intervalo tenga al menos un segmento
+seleccionado:
+
+```bash
+DEEPTALK_ASD_OFFLINE=1 \
+TALKINGFACEKIT_DATASET_VIDEO=data/eval/videos/video.mp4 \
+TALKINGFACEKIT_SMIRK_CHECKPOINT=models/smirk/SMIRK_em1.pt \
+TALKINGFACEKIT_SMIRK_LANDMARKER=models/face_landmarker.task \
+uv run pytest tests/test_dataset_e2e.py -q
+```
+
+`TALKINGFACEKIT_DATASET_START_SECONDS` y `TALKINGFACEKIT_DATASET_END_SECONDS` acotan el análisis.
+
 Para una carpeta, sin manifiestos ni anotaciones humanas:
 
 ```python
