@@ -468,6 +468,15 @@ segment removes its own partial files and does not stop later segments; output c
 any segment is processed. Target-face consistency between DeepTalk and the estimator's own detector
 is not checked yet: selected segments already exclude multiple visible faces.
 
+`dataset.build_dataset(...)` processes a collection without a second batch loop: it calls
+`TalkingFaceCollection.analyze` and exports each video's selected segments from its `on_progress`
+callback, which runs after that video's analysis JSON and `collection.json` are saved. Failures are
+therefore recorded per video by the collection and per segment by `export_segments`; an
+interruption keeps every completed video. `dataset.json` is rewritten atomically after each video
+and is the authoritative index of the run, with paths relative to the dataset root. Video
+directories reuse the collection's `NNNN-stem` naming. Conflicts with an earlier run fail before
+any model runs unless overwrite is explicit; overwritten runs leave unlisted stale files in place.
+
 A sequence created by `from_video` starts at zero and has `end_seconds=None`, meaning decode to
 end-of-stream. Reported stream/container duration is informational metadata, not an absolute source
 timestamp, so it is not used as the sequence end. This avoids truncating media whose first PTS is

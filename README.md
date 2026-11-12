@@ -369,6 +369,31 @@ procesar el primer segmento, salvo con `overwrite=True`. El resultado del extrac
 exactamente la misma fuente e intervalo. La identidad del rostro no se verifica en esta etapa:
 la selección ya rechaza intervalos con más de un rostro visible.
 
+Para una carpeta, `build_dataset` combina `TalkingFaceCollection.analyze` y `export_segments`:
+
+```python
+from talkingfacekit import AnalysisConfig, TalkingFaceCollection, VisualPolicy
+from talkingfacekit.dataset import build_dataset
+
+videos = build_dataset(
+    TalkingFaceCollection.from_folder("data/raw"),
+    "dataset",
+    extract_flame=lambda sequence: encoder.extract(
+        sequence, landmarker_model="models/face_landmarker.task"
+    ),
+    config=AnalysisConfig(visual_policy=VisualPolicy()),
+)
+```
+
+Cada video se exporta apenas termina su análisis, así que una interrupción conserva los videos
+completos. La salida queda como `analysis/` (los JSON de la colección), una carpeta
+`NNNN-nombre/segment_NNN/` por video y `dataset.json`, que se reescribe atómicamente después de
+cada video. Ese índice lista fuente, análisis, segmentos con su metadata y errores por video
+(inspección o análisis) y por segmento (etapa, tipo y mensaje), con rutas relativas a la raíz. Un
+error no detiene los videos ni segmentos siguientes. Si ya existe `dataset.json` o la carpeta de
+algún video, falla antes de cargar modelos, salvo con `overwrite=True`; en ese caso, archivos de
+corridas anteriores que no se reescriben quedan en disco pero fuera de `dataset.json`.
+
 El [ejemplo ejecutable](examples/build_dataset.py) recorre un video completo: carga SMIRK, analiza
 con el filtro visual, exporta los segmentos e imprime frames estimados o el error de cada uno.
 `--render` agrega `comparison.html` por segmento, con la malla FLAME2020 junto a su clip y el

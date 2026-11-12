@@ -1,4 +1,5 @@
 import json
+import shutil
 from fractions import Fraction
 from pathlib import Path
 from typing import cast
@@ -8,9 +9,19 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from talkingfacekit import TalkingFaceSegment, TalkingFaceSequence, stream_video_frames
-from talkingfacekit.dataset import export_segments
+from talkingfacekit import (
+    ActiveSpeakerProvenance,
+    ActiveSpeakerResult,
+    ActiveSpeakerScoreWindow,
+    CandidateRun,
+    TalkingFaceCollection,
+    TalkingFaceSegment,
+    TalkingFaceSequence,
+    stream_video_frames,
+)
+from talkingfacekit.dataset import build_dataset, export_segments
 from talkingfacekit.flame import FlameResult
+from talkingfacekit.integrations import deeptalk
 
 _FRAME_RATE = 25
 _SAMPLE_RATE = 16_000
@@ -255,3 +266,184 @@ def test_failed_overwrite_does_not_leave_a_stale_complete_segment(
 
     assert exports[0].error is not None
     assert not (tmp_path / "segment_001").exists()
+
+
+def selection(*bounds: tuple[float, float]) -> ActiveSpeakerResult:
+    """Return DeepTalk evidence whose structural candidates are the given source intervals."""
+    return ActiveSpeakerResult(
+        (),
+        (),
+        (ActiveSpeakerScoreWindow(0, 3, {1: 2.0}),),
+        ActiveSpeakerProvenance("0.3.1"),
+        candidate_runs=tuple(
+            CandidateRun(
+                start, end, "candidate", 1, ("structural_policy_passed",), 1, 20, 20, 1, 0, 2, 2, 2
+            )
+            for start, end in bounds
+        ),
+    )
+
+
+@pytest.fixture
+def folder(tmp_path: Path, source_video: Path) -> Path:
+    """Two decodable videos and one corrupt file, discovered as a, b (corrupt), c."""
+    videos = tmp_path / "videos"
+    videos.mkdir()
+    shutil.copyfile(source_video, videos / "a.mkv")
+    (videos / "b.mp4").write_bytes(b"corrupt")
+    shutil.copyfile(source_video, videos / "c.mkv")
+    return videos
+
+
+def test_folder_dataset_links_videos_segments_and_failures(
+    tmp_path: Path, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        deeptalk, "analyze_sequence", lambda *args, **kwargs: selection((0.4, 1.2), (1.6, 2.4))
+    )
+    output = tmp_path / "dataset"
+
+    videos = build_dataset(
+        TalkingFaceCollection.from_folder(folder), output, extract_flame=fake_flame
+    )
+
+    assert [item.source.name for item in videos] == ["a.mkv", "b.mp4", "c.mkv"]
+    assert [item.directory.name for item in videos] == ["0001-a", "0002-b", "0003-c"]
+    assert videos[1].error is not None and videos[1].segments == ()
+    assert not videos[1].directory.exists()
+    document = json.loads((output / "dataset.json").read_text("utf-8"))
+    assert document["kind"] == "talkingfacekit.dataset"
+    assert document["schema_version"] == 1
+    assert (document["total_videos"], document["completed_videos"]) == (3, 3)
+    assert (document["failed_videos"], document["exported_segments"]) == (1, 4)
+    assert document["failed_segments"] == 0
+    entries = document["videos"]
+    assert [entry["status"] for entry in entries] == ["completed", "failed", "completed"]
+    assert entries[1]["error"]["type"] == "ValueError"
+    assert entries[1]["analysis"] is None and entries[1]["segments"] == []
+    for entry, video in zip(entries, ("a.mkv", "b.mp4", "c.mkv"), strict=True):
+        assert entry["source"] == str((folder / video).resolve())
+    for entry in (entries[0], entries[2]):
+        assert (output / entry["analysis"]).is_file()
+        bounds = [(item["start_seconds"], item["end_seconds"]) for item in entry["segments"]]
+        assert bounds == [(0.4, 1.2), (1.6, 2.4)]
+        for item in entry["segments"]:
+            assert item["error"] is None and item["face_id"] == 1
+            metadata = json.loads((output / item["metadata"]).read_text("utf-8"))
+            assert metadata["source"] == entry["source"]
+            assert (metadata["start_seconds"], metadata["end_seconds"]) == (
+                item["start_seconds"],
+                item["end_seconds"],
+            )
+            segment_directory = (output / item["metadata"]).parent
+            assert segment_directory == output / item["directory"]
+            flame = FlameResult.load(segment_directory / metadata["flame"]["path"])
+            assert flame.source.path.resolve() == Path(entry["source"])
+            clip_times = clip_timestamps(segment_directory / metadata["clip"]["path"])
+            np.testing.assert_allclose(
+                clip_times + metadata["clip"]["source_time_offset_seconds"],
+                flame.timestamps_seconds,
+                atol=1e-3,
+            )
+
+
+def test_folder_dataset_records_segment_failures_and_continues(
+    tmp_path: Path, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        deeptalk, "analyze_sequence", lambda *args, **kwargs: selection((0.4, 1.2), (1.6, 2.4))
+    )
+    calls = 0
+
+    def fail_first(sequence: TalkingFaceSequence) -> FlameResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("simulated reconstruction failure")
+        return fake_flame(sequence)
+
+    output = tmp_path / "dataset"
+    build_dataset(TalkingFaceCollection.from_folder(folder), output, extract_flame=fail_first)
+
+    document = json.loads((output / "dataset.json").read_text("utf-8"))
+    assert (document["exported_segments"], document["failed_segments"]) == (3, 1)
+    failed = document["videos"][0]["segments"][0]
+    assert failed["metadata"] is None
+    assert failed["error"] == {
+        "stage": "flame",
+        "type": "RuntimeError",
+        "message": "simulated reconstruction failure",
+    }
+    assert not (output / failed["directory"]).exists()
+
+
+def test_interrupted_folder_keeps_completed_videos_in_dataset_json(
+    tmp_path: Path, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(deeptalk, "analyze_sequence", lambda *args, **kwargs: selection((0.4, 1.2)))
+    seen: list[Path] = []
+
+    def interrupt_on_last_video(sequence: TalkingFaceSequence) -> FlameResult:
+        seen.append(sequence.source.path)
+        if sequence.source.path.name == "c.mkv":
+            raise KeyboardInterrupt
+        return fake_flame(sequence)
+
+    output = tmp_path / "dataset"
+    with pytest.raises(KeyboardInterrupt):
+        build_dataset(
+            TalkingFaceCollection.from_folder(folder),
+            output,
+            extract_flame=interrupt_on_last_video,
+        )
+
+    document = json.loads((output / "dataset.json").read_text("utf-8"))
+    assert (document["total_videos"], document["completed_videos"]) == (3, 2)
+    assert document["exported_segments"] == 1
+    assert (output / document["videos"][0]["segments"][0]["metadata"]).is_file()
+    assert not (output / "0003-c" / "segment_001").exists()
+
+
+def test_existing_dataset_is_refused_before_analysis_unless_overwrite(
+    tmp_path: Path, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[Path] = []
+
+    def analyze(sequence: TalkingFaceSequence, **kwargs: object) -> ActiveSpeakerResult:
+        calls.append(sequence.source.path)
+        return selection((0.4, 1.2))
+
+    monkeypatch.setattr(deeptalk, "analyze_sequence", analyze)
+    collection = TalkingFaceCollection.from_folder(folder)
+    output = tmp_path / "dataset"
+    build_dataset(collection, output, extract_flame=fake_flame)
+    before = (output / "dataset.json").read_bytes()
+
+    with pytest.raises(FileExistsError):
+        build_dataset(collection, output, extract_flame=fake_flame)
+    assert len(calls) == 2
+    assert (output / "dataset.json").read_bytes() == before
+
+    build_dataset(collection, output, extract_flame=fake_flame, overwrite=True)
+    assert len(calls) == 4
+
+
+def test_empty_folder_writes_an_empty_dataset_without_models(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def forbid(*args: object, **kwargs: object) -> ActiveSpeakerResult:
+        raise AssertionError("no model may run")
+
+    monkeypatch.setattr(deeptalk, "analyze_sequence", forbid)
+    empty = tmp_path / "videos"
+    empty.mkdir()
+
+    assert (
+        build_dataset(
+            TalkingFaceCollection.from_folder(empty), tmp_path / "dataset", extract_flame=fake_flame
+        )
+        == ()
+    )
+    document = json.loads((tmp_path / "dataset" / "dataset.json").read_text("utf-8"))
+    assert (document["total_videos"], document["completed_videos"]) == (0, 0)
+    assert document["videos"] == []

@@ -3,13 +3,88 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from talkingfacekit.analysis import TalkingFaceSegment
 from talkingfacekit.flame import FlameResult
 from talkingfacekit.io.analysis import _write_json
 from talkingfacekit.io.provenance import code_revision
 
+if TYPE_CHECKING:
+    from talkingfacekit.dataset import DatasetVideo
+
 _SCHEMA_VERSION = 1
+
+
+def save_dataset_metadata(
+    videos: tuple[DatasetVideo, ...], root: Path, total_videos: int, output_path: Path
+) -> Path:
+    """Atomically write the version-1 ``talkingfacekit.dataset`` index of a folder run.
+
+    Parameters
+    ----------
+    videos
+        Completed video reports so far, in collection order.
+    root
+        Dataset root; every listed output path is stored relative to it, in POSIX form.
+    total_videos
+        Number of videos planned for the run, so a partial index is recognizable.
+    output_path
+        Destination ``dataset.json``. It is always replaced: callers check conflicts first.
+
+    Returns
+    -------
+    pathlib.Path
+        Written index path. Sources are absolute; no media is read.
+    """
+
+    def relative(path: Path | None) -> str | None:
+        return None if path is None else path.relative_to(root).as_posix()
+
+    entries: list[dict[str, object]] = []
+    for video in videos:
+        entries.append(
+            {
+                "source": str(video.source.resolve()),
+                "directory": relative(video.directory),
+                "analysis": relative(video.analysis_path),
+                "status": "failed" if video.error is not None else "completed",
+                "error": None
+                if video.error is None
+                else {"type": video.error.error_type, "message": video.error.message},
+                "segments": [
+                    {
+                        "directory": relative(item.directory),
+                        "start_seconds": item.segment.start_seconds,
+                        "end_seconds": item.segment.end_seconds,
+                        "face_id": item.segment.face_id,
+                        "metadata": relative(item.metadata_path),
+                        "error": None
+                        if item.error is None
+                        else {
+                            "stage": item.error.stage,
+                            "type": item.error.error_type,
+                            "message": item.error.message,
+                        },
+                    }
+                    for item in video.segments
+                ],
+            }
+        )
+    segments = [item for video in videos for item in video.segments]
+    failed_segments = sum(item.error is not None for item in segments)
+    document: dict[str, object] = {
+        "kind": "talkingfacekit.dataset",
+        "schema_version": _SCHEMA_VERSION,
+        "total_videos": total_videos,
+        "completed_videos": len(videos),
+        "failed_videos": sum(video.error is not None for video in videos),
+        "exported_segments": len(segments) - failed_segments,
+        "failed_segments": failed_segments,
+        "videos": entries,
+        "code_revision": code_revision(),
+    }
+    return _write_json(document, output_path, overwrite=True)
 
 
 def save_segment_metadata(

@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from talkingfacekit.analysis import TalkingFaceSegment
+from talkingfacekit.analysis import AnalysisConfig, TalkingFaceSegment
+from talkingfacekit.collection import AnalysisFailure, CollectionProgress, TalkingFaceCollection
 from talkingfacekit.flame import FlameResult
 from talkingfacekit.sequence import TalkingFaceSequence
 
@@ -19,6 +20,8 @@ SegmentStage = Literal["export", "flame", "metadata"]
 CLIP_NAME = "clip.mp4"
 FLAME_NAME = "flame.npz"
 METADATA_NAME = "segment.json"
+DATASET_NAME = "dataset.json"
+ANALYSIS_DIR = "analysis"
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +64,130 @@ class SegmentExport:
     flame_path: Path | None = None
     metadata_path: Path | None = None
     error: SegmentFailure | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetVideo:
+    """Report one collection source: its analysis outcome and exported segments.
+
+    Attributes
+    ----------
+    source
+        Input video path, in collection order.
+    directory
+        ``output_dir/NNNN-stem`` holding this video's ``segment_NNN`` directories. It exists
+        only when at least one segment was exported.
+    analysis_path
+        Saved per-video analysis JSON, or ``None`` when inspection or analysis failed.
+    error
+        Analysis failure, or ``None`` for a successful analysis, including one that selected
+        no segments.
+    segments
+        One report per selected segment; empty after an analysis failure.
+    """
+
+    source: Path
+    directory: Path
+    analysis_path: Path | None
+    error: AnalysisFailure | None
+    segments: tuple[SegmentExport, ...]
+
+
+def build_dataset(
+    collection: TalkingFaceCollection,
+    output_dir: str | Path,
+    *,
+    extract_flame: FlameExtractor,
+    config: AnalysisConfig | None = None,
+    overwrite: bool = False,
+) -> tuple[DatasetVideo, ...]:
+    """Analyze every video and export its selected segments, one video at a time.
+
+    This composes :meth:`TalkingFaceCollection.analyze` and :func:`export_segments`: each
+    video's segments are exported as soon as its analysis has been saved, so an interruption
+    keeps every completed video. The output layout is::
+
+        output_dir/
+            analysis/NNNN-stem.json, analysis/collection.json
+            NNNN-stem/segment_NNN/{clip.mp4, flame.npz, segment.json}
+            dataset.json
+
+    ``NNNN`` is the 1-based collection position, as in the collection's analysis files, so
+    videos with the same stem stay separate. ``dataset.json`` is rewritten atomically after
+    every video and lists exactly this run's videos, segments and failures.
+
+    Parameters
+    ----------
+    collection
+        Ordered sources. Analysis failures are recorded and processing continues.
+    output_dir
+        Dataset root directory, created as needed. It should not be inside a recursively
+        discovered input folder.
+    extract_flame
+        Facial-parameter extractor passed to :func:`export_segments`.
+    config
+        Shared analysis configuration, or the structural-only defaults.
+    overwrite
+        Whether results of a previous run may be replaced. Otherwise an existing
+        ``dataset.json`` or video directory raises before any model runs.
+
+    Returns
+    -------
+    tuple of DatasetVideo
+        One report per source, in collection order.
+
+    Raises
+    ------
+    FileExistsError
+        If outputs exist and ``overwrite`` is false.
+
+    Notes
+    -----
+    With ``overwrite``, files of an earlier run that this run does not rewrite (for example a
+    ``segment_004`` when only three segments are now selected) are left in place but are not
+    listed in ``dataset.json``, which is the authoritative index.
+    """
+    from talkingfacekit.io.dataset import save_dataset_metadata
+
+    root = Path(output_dir)
+    directories = tuple(
+        root / f"{index:04d}-{path.stem}" for index, path in enumerate(collection, start=1)
+    )
+    metadata_path = root / DATASET_NAME
+    if not overwrite:
+        for path in (metadata_path, *directories):
+            if path.exists():
+                raise FileExistsError(f"dataset output already exists: {path}")
+    videos: list[DatasetVideo] = []
+
+    def export_video(update: CollectionProgress) -> None:
+        outcome = update.outcome
+        directory = directories[len(videos)]
+        segments = (
+            ()
+            if outcome.result is None
+            else export_segments(
+                outcome.result.selected_segments,
+                directory,
+                extract_flame=extract_flame,
+                overwrite=overwrite,
+            )
+        )
+        videos.append(
+            DatasetVideo(outcome.path, directory, outcome.output_path, outcome.error, segments)
+        )
+        save_dataset_metadata(tuple(videos), root, len(collection), metadata_path)
+
+    collection.analyze(
+        config,
+        output_dir=root / ANALYSIS_DIR,
+        on_error="continue",
+        on_progress=export_video,
+        overwrite=overwrite,
+    )
+    if not collection:
+        save_dataset_metadata((), root, 0, metadata_path)
+    return tuple(videos)
 
 
 def export_segments(
