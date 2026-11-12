@@ -334,6 +334,94 @@ El comando imprime `inicio-fin -> archivo` para comparar cada corte con el origi
 `--syncnet-model models/syncnet_v2.model` habilita la verificación opcional existente; `--overwrite`
 permite repetir deliberadamente la exportación. No descarga modelos ni datos desde el ejemplo.
 
+### Exportar segmentos con sus parámetros FLAME
+
+`talkingfacekit.dataset.export_segments` vincula en una carpeta por segmento el clip, los
+parámetros y su metadata. Reutiliza `export_clip`, el extractor indicado y `FlameResult.save`:
+
+```python
+from talkingfacekit.dataset import export_segments
+from talkingfacekit.integrations.smirk import SmirkEncoder
+
+encoder = SmirkEncoder("models/smirk/SMIRK_em1.pt")  # se carga una sola vez
+exports = export_segments(
+    result.selected_segments,
+    "dataset/conversation",
+    extract_flame=lambda sequence: encoder.extract(
+        sequence, landmarker_model="models/face_landmarker.task"
+    ),
+)
+for item in exports:
+    print(item.directory, item.error)
+```
+
+Cada segmento produce `segment_001/clip.mp4`, `flame.npz` y, al final, `segment.json`. SMIRK se
+ejecuta sobre `segment.to_sequence()`, es decir sobre el video original y su timeline, no sobre el
+MP4 recodificado; ambos cubren los mismos frames decodificados. `segment.json` registra fuente y
+SHA-256, intervalo, `face_id`, estado, motivos, rutas relativas, cantidad de frames estimados y
+`clip.source_time_offset_seconds`: el tiempo `t` del clip corresponde al PTS fuente
+`t + source_time_offset_seconds`. Ese mismo valor es el `video_time_offset_seconds` del visor
+comparativo.
+
+Un error en un segmento queda en `item.error` (etapa, tipo y mensaje), se eliminan sus archivos
+parciales y continúan los siguientes. Si ya existe alguna salida, la llamada falla antes de
+procesar el primer segmento, salvo con `overwrite=True`. El resultado del extractor debe describir
+exactamente la misma fuente e intervalo. La identidad del rostro no se verifica en esta etapa:
+la selección ya rechaza intervalos con más de un rostro visible.
+
+Para una carpeta, `build_dataset` combina `TalkingFaceCollection.analyze` y `export_segments`:
+
+```python
+from talkingfacekit import AnalysisConfig, TalkingFaceCollection, VisualPolicy
+from talkingfacekit.dataset import build_dataset
+
+videos = build_dataset(
+    TalkingFaceCollection.from_folder("data/raw"),
+    "dataset",
+    extract_flame=lambda sequence: encoder.extract(
+        sequence, landmarker_model="models/face_landmarker.task"
+    ),
+    config=AnalysisConfig(visual_policy=VisualPolicy()),
+)
+```
+
+Cada video se exporta apenas termina su análisis, así que una interrupción conserva los videos
+completos. La salida queda como `analysis/` (los JSON de la colección), una carpeta
+`NNNN-nombre/segment_NNN/` por video y `dataset.json`, que se reescribe atómicamente después de
+cada video. Ese índice lista fuente, análisis, segmentos con su metadata y errores por video
+(inspección o análisis) y por segmento (etapa, tipo y mensaje), con rutas relativas a la raíz. Un
+error no detiene los videos ni segmentos siguientes. Si ya existe `dataset.json` o la carpeta de
+algún video, falla antes de cargar modelos, salvo con `overwrite=True`; en ese caso, archivos de
+corridas anteriores que no se reescriben quedan en disco pero fuera de `dataset.json`.
+
+El [ejemplo ejecutable](examples/build_dataset.py) recorre un video completo: carga SMIRK, analiza
+con el filtro visual, exporta los segmentos e imprime frames estimados o el error de cada uno.
+`--render` agrega `comparison.html` por segmento, con la malla FLAME2020 junto a su clip y el
+offset temporal ya aplicado. Requiere los extras `active-speaker-deeptalk`, `tracking-smirk` y,
+para `--render`, `rendering`, además de los modelos locales:
+
+```bash
+DEEPTALK_ASD_OFFLINE=1 uv run python examples/build_dataset.py \
+  data/eval/videos/video.mp4 reports/dataset/video --render
+```
+
+`--start` y `--end` limitan el análisis a un intervalo de la fuente; `--syncnet-model` habilita la
+verificación A/V opcional. La salida debe estar vacía salvo con `--overwrite`; si una corrida
+anterior dejó más carpetas de segmentos, el ejemplo las informa sin borrarlas.
+
+La prueba con modelos reales es opt-in y exige que el intervalo tenga al menos un segmento
+seleccionado:
+
+```bash
+DEEPTALK_ASD_OFFLINE=1 \
+TALKINGFACEKIT_DATASET_VIDEO=data/eval/videos/video.mp4 \
+TALKINGFACEKIT_SMIRK_CHECKPOINT=models/smirk/SMIRK_em1.pt \
+TALKINGFACEKIT_SMIRK_LANDMARKER=models/face_landmarker.task \
+uv run pytest tests/test_dataset_e2e.py -q
+```
+
+`TALKINGFACEKIT_DATASET_START_SECONDS` y `TALKINGFACEKIT_DATASET_END_SECONDS` acotan el análisis.
+
 Para una carpeta, sin manifiestos ni anotaciones humanas:
 
 ```python
