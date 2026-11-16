@@ -15,6 +15,10 @@ from talkingfacekit.audio import DecodedAudioChunk
 _SAMPLE_OFFSET_TOLERANCE = 1e-7
 
 
+class _EmptyAudioIntervalError(ValueError):
+    """Signal that decoding succeeded but the selected interval contained no samples."""
+
+
 def stream_audio_chunks(
     media_path: str | Path,
     *,
@@ -170,7 +174,7 @@ def _stream_audio_chunks(
         raise ValueError(f"Could not decode media file {media_path}: {error}") from error
 
     if not yielded_chunk:
-        raise ValueError(
+        raise _EmptyAudioIntervalError(
             f"No decoded audio samples fall within [{start_seconds}, {end_seconds}) seconds"
         )
 

@@ -327,13 +327,14 @@ un scheduler siguen pendientes. No se modificaron los modelos ni las políticas 
 
 ## Entrega 9 — normalización y export
 
-Cuando el cliente defina el formato de entrenamiento:
+Ya está disponible la exportación explícita de una secuencia acotada a MP4 H.264/AAC, sin
+sobrescritura implícita y conservando un origen A/V común. Cuando el cliente defina el formato de
+entrenamiento todavía falta:
 
-- exportar manifest de intervalos o clips físicos;
+- exportar el manifest de intervalos y decidir si los clips físicos necesitan normalización;
 - mantener referencias a timestamps y fingerprints fuente;
 - declarar codec, frame rate, resolución, pixel format, sample rate, canales y loudness;
 - distinguir normalización temporal de inputs de modelo de normalización permanente del dataset;
-- no sobrescribir media fuente por defecto.
 
 ## Nueva entrega — extracción FLAME y recorrido integrado
 

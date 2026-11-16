@@ -625,10 +625,15 @@ regiones preliminares fuera de esos runs siguen en `active_speaker.preliminary_s
 `TalkingFaceSegment` conserva `source`, `start_seconds`, `end_seconds`, `duration_seconds`,
 `face_id`, `status`, `reason_codes` y `to_sequence()` sin copiar media.
 
+Una secuencia acotada expone `export_clip(path, overwrite=False)`: decodifica el intervalo y
+recodifica H.264/AAC en MP4 con un origen temporal común. Esto permite encadenar directamente
+`segment.to_sequence().export_clip(...)`; una secuencia abierta debe acotarse primero.
+
 `result.save(path, overwrite=False)` guarda JSON completo; `result.render_report(path,
 overwrite=False)` genera HTML con la misma evidencia sin repetir inferencia. La carpeta HTML debe
 existir y los videos deben permanecer accesibles. El JSON conserva el esquema v1 de la CLI con
-metadata y timings adicionales. La carga tipada desde JSON y los clips físicos siguen pendientes.
+metadata y timings adicionales. La carga tipada desde JSON sigue pendiente; la exportación física
+es una operación explícita sobre las secuencias seleccionadas y no forma parte de `save`.
 
 El resultado de colección ofrece `items` en orden, `results`, `failures`, `selected_segments` y
 `save(...)` para su resumen. Con `output_dir`, cada éxito se guarda por archivo y `collection.json`
