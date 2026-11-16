@@ -268,6 +268,52 @@ def test_failed_overwrite_does_not_leave_a_stale_complete_segment(
     assert not (tmp_path / "segment_001").exists()
 
 
+def test_overwrite_invalidates_completion_before_replacing_files(
+    tmp_path: Path, source_video: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = export_segments(
+        segments(source_video, (0.5, 1.3)), tmp_path, extract_flame=fake_flame
+    )
+    assert original[0].error is None
+    directory = tmp_path / "segment_001"
+    metadata_path = directory / "segment.json"
+    old_clip = (directory / "clip.mp4").read_bytes()
+    old_flame = (directory / "flame.npz").read_bytes()
+    export_clip = TalkingFaceSequence.export_clip
+    stages: list[str] = []
+
+    def checked_export(
+        sequence: TalkingFaceSequence, output_path: str | Path, *, overwrite: bool = False
+    ) -> Path:
+        assert not metadata_path.exists()
+        assert (directory / "clip.mp4").read_bytes() == old_clip
+        assert (directory / "flame.npz").read_bytes() == old_flame
+        stages.append("export")
+        return export_clip(sequence, output_path, overwrite=overwrite)
+
+    def checked_flame(sequence: TalkingFaceSequence) -> FlameResult:
+        assert not metadata_path.exists()
+        assert (directory / "clip.mp4").read_bytes() != old_clip
+        assert (directory / "flame.npz").read_bytes() == old_flame
+        stages.append("flame")
+        return fake_flame(sequence)
+
+    monkeypatch.setattr(TalkingFaceSequence, "export_clip", checked_export)
+    replaced = export_segments(
+        segments(source_video, (1.6, 2.4)),
+        tmp_path,
+        extract_flame=checked_flame,
+        overwrite=True,
+    )
+
+    assert replaced[0].error is None
+    assert stages == ["export", "flame"]
+    metadata = json.loads(metadata_path.read_text("utf-8"))
+    assert (metadata["start_seconds"], metadata["end_seconds"]) == (1.6, 2.4)
+    flame = FlameResult.load(directory / "flame.npz")
+    assert (flame.start_seconds, flame.end_seconds) == (1.6, 2.4)
+
+
 def selection(*bounds: tuple[float, float]) -> ActiveSpeakerResult:
     """Return DeepTalk evidence whose structural candidates are the given source intervals."""
     return ActiveSpeakerResult(

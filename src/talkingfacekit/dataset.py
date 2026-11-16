@@ -237,6 +237,9 @@ def export_segments(
     -----
     Processing is sequential. Only :class:`Exception` subclasses become segment failures;
     ``KeyboardInterrupt`` removes the current segment's partial files and propagates.
+    Overwriting removes the previous ``segment.json`` before replacing any outputs and publishes
+    it again only when all new outputs are complete. An abruptly terminated overwrite can leave
+    partial files, but no completion marker for a mixture of old and new outputs.
     """
     items = tuple(segments)
     if not items:
@@ -274,6 +277,9 @@ def _export_segment(
     stage: SegmentStage = "export"
     try:
         sequence = segment.to_sequence()
+        if overwrite:
+            # Invalidate completion before any old output can be replaced.
+            (directory / METADATA_NAME).unlink(missing_ok=True)
         clip_path = sequence.export_clip(directory / CLIP_NAME, overwrite=overwrite)
         stage = "flame"
         flame = extract_flame(sequence)

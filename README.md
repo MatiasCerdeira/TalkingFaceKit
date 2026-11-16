@@ -369,6 +369,10 @@ procesar el primer segmento, salvo con `overwrite=True`. El resultado del extrac
 exactamente la misma fuente e intervalo. La identidad del rostro no se verifica en esta etapa:
 la selección ya rechaza intervalos con más de un rostro visible.
 
+Al sobrescribir, se retira el `segment.json` anterior antes de reemplazar archivos y se vuelve a
+publicar sólo al completar todas las salidas. Si el proceso termina abruptamente, pueden quedar
+archivos parciales; un segmento sin `segment.json` debe considerarse incompleto.
+
 Para una carpeta, `build_dataset` combina `TalkingFaceCollection.analyze` y `export_segments`:
 
 ```python

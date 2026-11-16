@@ -463,7 +463,10 @@ same decoded frames. The estimator is a plain `Callable[[TalkingFaceSequence], F
 lets a future sequence reconstruction facade replace `SmirkEncoder.extract` without changing the
 orchestration, and its result must match the segment's source and interval exactly. Each segment
 directory is complete only when `segment.json` exists; it is written last and records relative
-output paths plus `clip.source_time_offset_seconds` (source PTS = clip time + offset). A failed
+output paths plus `clip.source_time_offset_seconds` (source PTS = clip time + offset). Overwriting
+removes the previous completion marker before replacing any output and publishes a new marker only
+after all outputs are complete. Abrupt process termination may leave partial files without a marker;
+it must not leave mixed old/new outputs marked complete. A failed
 segment removes its own partial files and does not stop later segments; output conflicts fail before
 any segment is processed. Target-face consistency between DeepTalk and the estimator's own detector
 is not checked yet: selected segments already exclude multiple visible faces.
